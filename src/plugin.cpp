@@ -12,7 +12,7 @@
 #ifdef DANCEHAP_HAVE_OBS
 #  include <obs-module.h>
    OBS_DECLARE_MODULE()
-   OBS_MODULE_USE_DEFAULT_LOCALE("dancehap")
+   OBS_MODULE_USE_DEFAULT_LOCALE("dancehap", "en-US")
 #else
 #  include "plugin.hpp"
 #endif
@@ -76,7 +76,12 @@ const char *obs_module_description(void)
            "matting + alpha overlays. Phase 1.0 skeleton.";
 }
 
+// NOTE: obs_module_ver() is provided by the OBS_DECLARE_MODULE macro in
+// real-OBS builds (libobs/obs-module.h). In stub mode it is declared in
+// plugin.hpp and must be defined here.
+#ifndef DANCEHAP_HAVE_OBS
 unsigned int obs_module_ver(void)
 {
     return DANCEHAP_VERSION_UINT32;
 }
+#endif
