@@ -224,3 +224,23 @@ check (avec skip gracieux si pas d'outil dispo).
 Le `.github/workflows/ci.yml` actuel est un template fonctionnel pour setup
 OBS 31 SDK + build plugin + tests stub + smoke + upload. Sert de référence
 pour les prochaines phases.
+
+---
+
+## Pièges Snappy / FetchContent en CI (Phase 1.3 — RÉSOLUS)
+
+### 16. Snappy CMakeLists incompatible avec CMake 4.0+
+
+**Symptôme** :
+```
+CMake Error at build/_deps/snappy-src/CMakeLists.txt:29 (cmake_minimum_required):
+  Compatibility with CMake < 3.5 has been removed from CMake.
+```
+
+**Cause** : Snappy 1.2.x utilise `cmake_minimum_required(VERSION 2.8.x ...)` ou
+similaire. CMake 4.0+ (installé sur les runners GitHub Actions 2025+) a supprimé
+la compatibilité avec CMake < 3.5.
+
+**Fix appliqué** : Définir `CMAKE_POLICY_VERSION_MINIMUM=3.5` avant
+`FetchContent_MakeAvailable(snappy)` dans le CMakeLists.txt racine. C'est la
+solution recommandée par CMake lui-même dans le message d'erreur.

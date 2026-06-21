@@ -24,6 +24,7 @@
 
 #include "hap_clip_source.hpp"
 #include "hap_demuxer.hpp"
+#include "hap_decoder.hpp"
 #include "dancehap/version.h"
 
 #include <cstring>
@@ -43,9 +44,11 @@ struct hap_clip_context {
     bool active    = false;
 
     // Phase 1.2: container demuxer.
+    // Phase 1.3: HAP decoder.
     // Owned via unique_ptr so the context stays movable/copyable-friendly
-    // and the demuxer is destroyed deterministically in hap_clip_destroy.
+    // and resources are destroyed deterministically in hap_clip_destroy.
     std::unique_ptr<dancehap::HapDemuxer> demuxer;
+    std::unique_ptr<dancehap::HapDecoder> decoder;
     dancehap::DemuxState demux_state = dancehap::DemuxState::Idle;
 
     /// Open (or re-open) the demuxer on the current file_path.
@@ -74,10 +77,15 @@ struct hap_clip_context {
              dancehap::hap_variant_to_string(vi.variant),
              vi.width, vi.height, demuxer->getDuration(),
              demuxer->hasAudio() ? "yes" : "no");
+
+        // Phase 1.3: create decoder with video info from demuxer.
+        decoder = std::make_unique<dancehap::HapDecoder>();
+        decoder->setVideoInfo(vi);
     }
 
     void close_demuxer()
     {
+        decoder.reset();  // Phase 1.3: release decoder + texture
         if (demuxer) demuxer->close();
         demux_state = dancehap::DemuxState::Idle;
     }
@@ -190,15 +198,38 @@ void hap_clip_deactivate(void *data)
     blog(LOG_INFO, "[DanceHAP] hap_clip_source deactivated");
 }
 
-void hap_clip_video_tick(void * /*data*/, float /*seconds*/)
+void hap_clip_video_tick(void *data, float /*seconds*/)
 {
-    // Phase 1.4: advance HAP playback, update audio sync.
+    auto *ctx = static_cast<hap_clip_context *>(data);
+    if (!ctx || !ctx->demuxer || !ctx->decoder) return;
+    if (ctx->demux_state != dancehap::DemuxState::Ready) return;
+
+    // Phase 1.3: read next video packet and decode it.
+    // Phase 1.4 will add proper FPS timing + loop + A/V sync.
+    dancehap::DemuxPacket pkt = ctx->demuxer->readNextVideoPacket();
+    if (pkt.valid) {
+        ctx->decoder->decode(pkt);
+    }
+    // EOF / loop handling arrives in Phase 1.4.
 }
 
-void hap_clip_video_render(void * /*data*/, gs_effect_t * /*effect*/)
+void hap_clip_video_render(void *data, gs_effect_t *effect)
 {
-    // Phase 1.3-1.4: upload decoded HAP texture and draw.
-    // Safe no-op for now — OBS clears the frame to black by default.
+    auto *ctx = static_cast<hap_clip_context *>(data);
+    if (!ctx || !ctx->decoder) return;
+
+    gs_texture_t *tex = ctx->decoder->getTexture();
+    if (!tex) return;  // stub mode or no decoded frame yet
+
+#ifdef DANCEHAP_HAVE_OBS
+    // Draw the decoded HAP texture using the default OBS effect.
+    gs_effect_set_texture(
+        gs_effect_get_param_by_name(effect, "image"), tex);
+    gs_draw_sprite(tex, 0,
+                   ctx->decoder->getWidth(),
+                   ctx->decoder->getHeight());
+#endif
+    // Stub mode: no OBS graphics API — safe no-op.
 }
 
 // ---------------------------------------------------------------------------

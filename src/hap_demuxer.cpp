@@ -541,8 +541,26 @@ DemuxPacket HapDemuxer::readNextVideoPacket()
                 STUB_FPS_DEN * 1'000'000LL / STUB_FPS_NUM;
     dp.dts_us = dp.pts_us;
     dp.key_frame = (pimpl_->video_packets_read % 30 == 0);  // keyframe every 30
-    // Synthetic minimal HAP frame header (placeholder — real decode in 1.3).
-    dp.data.resize(64, 0);
+
+    // Build a minimal valid HAP frame header so HapDecoder can parse it.
+    // Single-chunk format: [4B BE32: remaining] [4B FourCC] [data...]
+    // The stub detects HAPA (FourCC = Hap5) matching sample_hapa_5s.mov.
+    // remaining = 4 (FourCC) + COMPRESSED_SIZE
+    static constexpr int COMPRESSED_SIZE = 48;  // fake compressed payload
+    const uint32_t remaining = 4 + COMPRESSED_SIZE;
+    dp.data.resize(8 + COMPRESSED_SIZE, 0);
+    // Big-endian remaining size.
+    dp.data[0] = static_cast<uint8_t>((remaining >> 24) & 0xFF);
+    dp.data[1] = static_cast<uint8_t>((remaining >> 16) & 0xFF);
+    dp.data[2] = static_cast<uint8_t>((remaining >> 8) & 0xFF);
+    dp.data[3] = static_cast<uint8_t>(remaining & 0xFF);
+    // FourCC "Hap5" (HAPA DXT5) as raw bytes = le32 read.
+    dp.data[4] = 'H';
+    dp.data[5] = 'a';
+    dp.data[6] = 'p';
+    dp.data[7] = '5';
+    // Bytes 8+ are the fake compressed data (zeros).
+
     dp.valid = true;
     ++pimpl_->video_packets_read;
     return dp;

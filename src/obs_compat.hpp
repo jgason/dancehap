@@ -45,8 +45,10 @@
 // obs_data and obs_properties are defined below with test-visible members.
 struct obs_source;            // opaque — the OBS source handle
 struct gs_effect;             // opaque — the graphics effect
+struct gs_texture;            // opaque — the graphics texture (Phase 1.3)
 typedef struct obs_source  obs_source_t_inner;
 typedef struct gs_effect  gs_effect_t_inner;
+typedef struct gs_texture gs_texture_t_inner;
 
 // obs_data: simple key-value store.
 // Members are public for unit-test inspection (stub mode only).
@@ -74,11 +76,12 @@ typedef struct obs_properties obs_properties;
 // Pointer typedefs used in OBS function signatures.
 // In OBS: obs_data_t is the struct, obs_data_t * is the handle.
 // For stub consistency we mirror this: typedef-name = struct-name.
-// (obs_source_t and gs_effect_t remain opaque.)
+// (obs_source_t, gs_effect_t, gs_texture_t remain opaque.)
 typedef struct obs_data       obs_data_t;
 typedef struct obs_properties obs_properties_t;
 typedef struct obs_source     obs_source_t;
 typedef struct gs_effect      gs_effect_t;
+typedef struct gs_texture     gs_texture_t;
 
 // ---- Enums ----------------------------------------------------------------
 

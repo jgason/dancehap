@@ -26,6 +26,7 @@ add_executable(dancehap_unit_tests
     unit/test_skeleton.cpp
     unit/test_hap_clip_source.cpp
     unit/test_hap_demuxer.cpp
+    unit/test_hap_decoder.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
@@ -47,5 +48,13 @@ target_compile_definitions(dancehap_unit_tests PRIVATE
 target_compile_features(dancehap_unit_tests PRIVATE cxx_std_17)
 
 # Auto-discover tests for ctest.
+# On Windows, the default 5-second timeout for test discovery is too short:
+# the .exe takes longer to start (DLL loading + Defender scan). Bump to 60s.
+# NOTE: do NOT use DISCOVERY_MODE PRE_TEST — it has a known bug with Visual
+# Studio multi-config generators (the per-config include file gets a literal
+# '-' suffix instead of the config name, causing 'include could not find
+# requested file' at ctest time). POST_BUILD (default) works correctly.
 include(GoogleTest)
-gtest_discover_tests(dancehap_unit_tests)
+gtest_discover_tests(dancehap_unit_tests
+    DISCOVERY_TIMEOUT 60
+    PROPERTIES TIMEOUT 30)
