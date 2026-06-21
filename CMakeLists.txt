@@ -118,6 +118,9 @@ if(DANCEHAP_WITH_OBS_DEPS)
         # Snappy builds a static lib by default; suppress tests/examples.
         set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+        # Snappy 1.2.x uses cmake_minimum_required(VERSION < 3.5) which CMake
+        # 4.0+ rejects. Set the policy version minimum to allow it to configure.
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
         FetchContent_MakeAvailable(snappy)
         set(DANCEHAP_HAVE_SNAPPY 1)
         set(DANCEHAP_SNAPPY_LIB snappy)
