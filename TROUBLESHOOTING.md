@@ -112,3 +112,93 @@ proprement, même en cas d'échec ffmpeg.
   Laisser CMake auto-détecter, GitHub Actions setup-* actions gérer les versions.
 - **Toujours forcer UTF-8** dans les scripts Python en CI.
 - **Capturer stderr** de tout sous-processus lancé depuis un script Python en CI.
+
+---
+
+## Pièges OBS SDK en CI (Phase 1.1 — NON RÉSOLUS)
+
+La Phase 1.1 a essayé d'activer `DANCEHAP_WITH_OBS_DEPS=ON` en CI, ce qui
+demande de builder libobs depuis les sources (obs-studio) avec les prebuilt
+deps (obs-deps). **5 rounds de CI ont échoué sur 5 problèmes différents.**
+Décision : pause sur ce front, on garde stub-only CI pour l'instant (valide
+toute la logique du code). Build real-OBS à tester localement (voir
+`BUILD-LOCAL.md`).
+
+### 7. OBS exige le générateur Xcode sur macOS
+
+**Symptôme** : `Building OBS Studio on macOS requires Xcode generator`.
+
+**Cause** : `cmake/macos/compilerconfig.cmake` d'OBS hardcode l'exigence du
+générateur Xcode.
+
+**Fix partiel** : ajouter `-G Xcode` au configure OBS (mais Xcode est
+multi-config, donc tous les `--build` doivent avoir `--config Release`).
+
+**Statut** : contourné mais combine avec #10/#11.
+
+### 8. `<experimental/coroutine>` déprécié en VS 18 (MSVC)
+
+**Symptôme** :
+```
+error C2338: static assertion failed: 'error STL1011: The /await compiler
+option, <experimental/coroutine>... are deprecated'
+```
+
+**Cause** : OBS 31.x utilise `<experimental/coroutine>` via `libobs-winrt`.
+VS 18 Enterprise sur `windows-latest` déprécie ce header.
+
+**Fix** : `-DCMAKE_CXX_FLAGS=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS`
+
+### 9. `cmake --install` échoue sur frontend-api non built
+
+**Symptôme** :
+```
+file INSTALL cannot find "obs-build/frontend/api/Release/obs-frontend-api.dll"
+```
+
+**Cause** : `cmake --install --component Development` essaie d'installer des
+cibles qui ne sont pas build avec `-DENABLE_FRONTEND=OFF`.
+
+**Fix tenté** : skip `cmake --install`, pointer CMake sur le build tree
+directement. → a déclenché le bug #11 (find_package LibObs échoue).
+
+### 10. Target `obs` vs `libobs`
+
+**Symptôme** :
+```
+MSBUILD error MSB1009: Project file does not exist. Switch: obs.vcxproj
+xcodebuild: does not contain a target named 'obs'
+```
+
+**Cause** : le target s'appelle `libobs`, pas `obs`, sur les générateurs VS et
+Xcode.
+
+**Fix** : utiliser `--target libobs` au lieu de `--target obs`.
+
+### 11. `find_package(LibObs)` sur le build tree
+
+**Symptôme** :
+```
+Could NOT find LibObs (missing: LIBOBS_INCLUDE_DIR LIBOBS_LIBRARY)
+```
+
+**Cause** : pointer `CMAKE_PREFIX_PATH` sur `obs-build/` ne suffit pas pour que
+notre `cmake/FindLibObs.cmake` (qui cherche `obs.h` et `libobs`) trouve les
+fichiers. Le build tree a une layout différente du install tree.
+
+**Fix** : pas encore trouvé. Pistes à explorer plus tard :
+1. Utiliser `libobsConfig.cmake` directement (`find_package(libobs CONFIG)`)
+2. Faire `cmake --install` avec un composant qui existe (`--component Headers`)
+3. Utiliser une action GitHub dédiée (`dennisamelig/setup-obs-studio`)
+4. Copier le template CI du repo `obsproject/obs-plugintemplate`
+
+## Recommandation pour la reprise
+
+Quand on reprend le sujet OBS real-build en CI :
+1. **Charger le skill `github-operations`** et inspecter le CI de
+   `obsproject/obs-plugintemplate` — c'est le template officiel et il gère
+   tout ce setup. L'inspiration directe est plus rapide qu'expérimenter.
+2. Considérer l'action `dennisamelig/setup-obs-studio` ou similaire.
+3. Si on n'arrive pas à faire marcher le real-OBS build en CI, accepter
+   stub-only CI à long terme et tester le plugin manuellement avant chaque
+   release (Gate E pré-release).
