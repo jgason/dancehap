@@ -41,24 +41,22 @@
 // ---------------------------------------------------------------------------
 // Helper: create a temporary file with given contents.
 // Returns the file path. Caller must remove it after use.
+// Cross-platform: uses tmpnam() + ofstream (mkstemp is POSIX-only and not
+// available on MSVC — caused Phase 1.2 CI failure on Windows).
 // ---------------------------------------------------------------------------
 
 static std::string make_temp_file(const std::string &suffix,
                                   const std::vector<uint8_t> &contents)
 {
-    char tmpl[] = "/tmp/dancehap_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) return "";
-    close(fd);
+    char tmpl_buf[L_tmpnam];
+    if (std::tmpnam(tmpl_buf) == nullptr) return "";
 
-    std::string path(tmpl);
-    path += suffix;
-
-    if (!suffix.empty()) {
-        std::rename(tmpl, path.c_str());
-    }
+    std::string path(tmpl_buf);
+    // Add a file extension if a suffix was requested (some platforms need it).
+    if (!suffix.empty()) path += suffix;
 
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f.is_open()) return "";
     f.write(reinterpret_cast<const char *>(contents.data()),
             static_cast<std::streamsize>(contents.size()));
     f.close();
