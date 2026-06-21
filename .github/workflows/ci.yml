@@ -48,7 +48,15 @@ jobs:
       - name: Install Python deps (numpy)
         run: pip install numpy
 
-      # --- ffmpeg (preinstalled on GitHub runners; verify) -------------
+      # --- ffmpeg (NOT preinstalled on recent GitHub runners; install) -
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
       - name: Verify ffmpeg
         run: ffmpeg -version
 
