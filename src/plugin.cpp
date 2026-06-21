@@ -48,18 +48,21 @@ void obs_module_post_load(void)
 }
 
 // ---------------------------------------------------------------------------
-// Locale (stub for skeleton — real i18n in Phase 5)
+// Locale — in OBS 31+ these are defined by OBS_MODULE_USE_DEFAULT_LOCALE
+// macro. Only define them in stub mode.
 // ---------------------------------------------------------------------------
 
+#ifndef DANCEHAP_HAVE_OBS
 void obs_module_set_locale(const char * /*locale*/)
 {
-    // Phase 1.0: no locale resources.
+    // Stub mode only.
 }
 
 void obs_module_free_locale(void)
 {
-    // Phase 1.0: no locale resources.
+    // Stub mode only.
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Module metadata

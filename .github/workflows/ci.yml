@@ -130,16 +130,19 @@ jobs:
       - name: Configure plugin (with OBS deps)
         shell: bash
         run: |
-          # After `cmake --build obs-build --target libobs`, the generated
-          # libobs-config.cmake lives in obs-build/libobs/. Pass it via
-          # libobs_DIR (CMake CONFIG-mode hint) and the prebuilt deps via
-          # CMAKE_PREFIX_PATH.
+          # libobs_DIR + w32-pthreads_DIR (Windows only) point CMake at the
+          # config-mode packages generated inside the OBS build tree.
+          EXTRA_ARGS=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
+          fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DDANCEHAP_BUILD_TESTS=OFF \
             -DDANCEHAP_WITH_OBS_DEPS=ON \
             -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
-            -Dlibobs_DIR="$PWD/obs-build/libobs"
+            -Dlibobs_DIR="$PWD/obs-build/libobs" \
+            $EXTRA_ARGS
 
       - name: Build plugin
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
