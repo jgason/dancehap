@@ -42,17 +42,57 @@ The generator script also runs this check automatically after encoding.
 
 ---
 
-## Why this clip is NOT committed to git
+## Why this clip IS committed to git
 
-The `.mov` file is excluded by `.gitignore` (`tests/assets/*.mov`).
-Instead, CI regenerates it before each test run via
-`generate_test_hap.py`. Rationale:
+The `.mov` file (~656 KB) **is committed** directly to the repository.
+The `.gitignore` was relaxed to allow `tests/assets/*.mov` specifically.
 
-1. **Reproducibility**: the script produces the same output on every run.
-   A committed binary could silently drift from the generator.
-2. **Repository hygiene**: no opaque binary diffs in commits.
-3. **Size**: ~650 KB per version — trivial to regenerate, unnecessary to
-   store in git history.
+### History
+
+The initial design (Phase 1.0) chose to regenerate the clip in CI to keep
+the repo "binary-free". This decision was reversed after 4 consecutive CI
+failures across Windows + macOS:
+
+1. ffmpeg is no longer preinstalled on GitHub runners (removed recently)
+2. After installing ffmpeg via brew/choco, the builds shipped by Homebrew
+   and Chocolatey **do not include the HAP encoder** (compiled without
+   `--enable-encoder=hap`). The CI failed with `Unknown encoder 'hap'`.
+
+To fix the regeneration approach, we would need to download a full static
+ffmpeg build (gyan.dev on Windows, evermeet.cx on macOS) — adding network
+dependencies, version drift risk, and ~30-60s of download time to every CI
+run, for a 5-second test clip that never changes.
+
+### Rationale for committing
+
+| Criterion          | Regenerate in CI      | Commit to git         |
+|--------------------|-----------------------|-----------------------|
+| Size               | 0 KB in repo          | ~656 KB in repo       |
+| CI time            | +30-60s (download)    | 0s                    |
+| CI flakiness       | High (network, build) | None                  |
+| Reproducibility    | Depends on ffmpeg ver | Byte-identical        |
+| Binary diffs       | None                  | Trivial (rarely changes) |
+| External deps      | ffmpeg full build     | None                  |
+
+656 KB is well under any reasonable threshold for direct git storage
+(no Git LFS needed — LFS quota on free accounts is 1 GB shared). The file
+is deterministic and rarely changes: a future modification would produce
+one clean diff, which is perfectly acceptable.
+
+### When to regenerate
+
+The generator script (`generate_test_hap.py`) is kept in the repo for:
+- Documentation of how the asset was produced
+- Ability to regenerate if the test pattern needs to change
+- Local dev who wants a fresh copy
+
+To regenerate and commit a new version (e.g. if the pattern changes):
+
+```bash
+python tests/assets/generate_test_hap.py
+git add tests/assets/sample_hapa_5s.mov
+git commit -m "chore(tests): regenerate sample_hapa_5s.mov with updated pattern"
+```
 
 ---
 

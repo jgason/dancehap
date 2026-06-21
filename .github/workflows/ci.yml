@@ -39,33 +39,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Python + deps for HAP test asset generation ------------------
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Python deps (numpy)
-        run: pip install numpy
-
-      # --- ffmpeg (NOT preinstalled on recent GitHub runners; install) -
-      - name: Install ffmpeg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg
-
-      - name: Install ffmpeg (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ffmpeg -y --no-progress
-
-      - name: Verify ffmpeg
-        run: ffmpeg -version
-
-      # --- Generate test HAP asset -------------------------------------
-      - name: Generate test HAP asset
-        run: python tests/assets/generate_test_hap.py
-
-      - name: Verify test HAP asset (ffprobe)
-        run: ffprobe -v error -show_entries stream=codec_name,codec_tag_string,width,height,duration -show_entries format=duration -of json tests/assets/sample_hapa_5s.mov
+      # Note: sample_hapa_5s.mov is committed to the repo (~656 KB) rather
+      # than regenerated in CI. The brew/choco ffmpeg builds on GitHub
+      # runners lack the HAP encoder, and ffmpeg is no longer preinstalled.
+      # See tests/assets/README.md for the full rationale.
 
       # --- Configure CMake ---------------------------------------------
       - name: Configure CMake
