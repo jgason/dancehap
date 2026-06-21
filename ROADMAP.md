@@ -29,10 +29,10 @@ au-delà de la property view OBS standard.
 - [x] Skeleton CMake + build Windows + macOS (Phase 1.0, PR #1)
 - [x] Wrapper source OBS `hap_clip_source` enregistré (Phase 1.1, PR #2)
 - [x] Property view OBS : chemin du fichier, toggle loop, toggle autoplay (Phase 1.1)
-- [x] Tests unitaires GoogleTest (42 tests, stub mode) (Phase 1.0–1.2)
+- [x] Tests unitaires GoogleTest (62 tests, stub mode) (Phase 1.0–1.3)
 - [x] CI GitHub Actions matrix Win+macOS avec real-OBS build (Phase 1.1)
 - [x] Demux container (FFmpeg/libav) → extraction flux HAP + audio (Phase 1.2, PR #3)
-- [ ] Décode HAP : Snappy decompress → upload texture DXT1/DXT5/BC7
+- [x] Décode HAP : Snappy decompress → upload texture DXT1/DXT5 (Phase 1.3, PR #4)
 - [ ] Routing audio OBS natif
 - [ ] États : idle / loading / playing / looping / ended
 - [ ] Smoke test OBS Windows
