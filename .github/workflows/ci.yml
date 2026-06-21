@@ -2,10 +2,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
 #
 # DanceHAP CI — build matrix Windows + macOS (ADR-001).
-# Phase 1.0 skeleton: configure, build plugin MODULE, run GoogleTest.
+# Phase 1.1: build plugin against real OBS headers + run unit tests (stub mode).
 #
-# Inspiration: obsproject/obs-plugintemplate CI workflow.
-# Per ADR-001, Linux is a non-goal and is NOT in the matrix.
+# Pipeline:
+#   1. Download + build libobs SDK from obs-studio source + obs-deps prebuilt
+#   2. Build DanceHAP MODULE with DANCEHAP_WITH_OBS_DEPS=ON
+#   3. Build + run unit tests with DANCEHAP_WITH_OBS_DEPS=OFF (stub mode)
+#   4. Smoke test (symbol export check)
+#   5. Upload plugin artifact
+#
+# Linux is a non-goal per ADR-001 and is NOT in the matrix.
+# See TROUBLESHOOTING.md for CI pitfalls resolved in Phase 1.0.
 
 name: CI
 
@@ -17,6 +24,10 @@ on:
 
 env:
   BUILD_TYPE: Release
+  # OBS versions — pinned to match the obs-plugintemplate reference.
+  # If the build breaks after a runner image update, try bumping these.
+  OBS_VERSION: "31.1.1"
+  OBS_DEPS_VERSION: "2025-07-11"
 
 jobs:
   build:
@@ -26,9 +37,8 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            # Let CMake auto-detect the generator (Visual Studio 17 2022 on
-            # current runners; version may change). Pinning the generator
-            # caused 'could not find any instance of Visual Studio' failures.
+            # Let CMake auto-detect the generator (pitfall #3: pinning VS
+            # version caused 'could not find any instance of Visual Studio').
             cmake_generator: ""
             artifact_ext: dll
           - os: macos-latest
@@ -38,32 +48,128 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # --- Checkout -----------------------------------------------------
+      # ==================================================================
+      # Checkout
+      # ==================================================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Note: sample_hapa_5s.mov is committed to the repo (~656 KB) rather
-      # than regenerated in CI. The brew/choco ffmpeg builds on GitHub
-      # runners lack the HAP encoder, and ffmpeg is no longer preinstalled.
-      # See tests/assets/README.md for the full rationale.
+      # ==================================================================
+      # Phase 1: Setup OBS libobs SDK
+      # Downloads obs-studio source + prebuilt deps, builds libobs, installs.
+      # ==================================================================
 
-      # --- Configure CMake ---------------------------------------------
-      - name: Configure CMake
-        run: cmake -B build -S . ${{ matrix.cmake_generator }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DDANCEHAP_BUILD_TESTS=ON
+      - name: Setup OBS SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Download prebuilt OBS dependencies (third-party libs for compilation)
+          $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/windows-deps-${{ env.OBS_DEPS_VERSION }}-x64.zip"
+          Write-Host "Downloading obs-deps from $depsUrl"
+          Invoke-WebRequest -Uri $depsUrl -OutFile obs-deps.zip
+          7z x obs-deps.zip -o"${{ github.workspace }}\obs-deps" -y
 
-      # --- Build --------------------------------------------------------
-      - name: Build
+          # Download obs-studio source
+          $obsUrl = "https://github.com/obsproject/obs-studio/archive/refs/tags/${{ env.OBS_VERSION }}.zip"
+          Write-Host "Downloading obs-studio ${{ env.OBS_VERSION }}"
+          Invoke-WebRequest -Uri $obsUrl -OutFile obs-src.zip
+          7z x obs-src.zip -o"${{ github.workspace }}" -y
+
+          # Configure obs-studio (minimal: just libobs).
+          # VS 18's MSVC deprecates <experimental/coroutine>; OBS 31.x still
+          # uses it via libobs-winrt. Silence the deprecation assertion so the
+          # build succeeds.
+          cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DENABLE_PLUGINS=OFF `
+            -DENABLE_FRONTEND=OFF `
+            -DENABLE_UI=OFF `
+            -DCMAKE_ENABLE_SCRIPTING=OFF `
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}\obs-deps" `
+            "-DCMAKE_CXX_FLAGS=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+
+          # Build libobs target. Note: the target name depends on the generator
+          # — `libobs` for VS and Xcode (project-file based), `obs` only for
+          # some single-config generators. `libobs` works everywhere.
+          cmake --build obs-build --target libobs --config Release --parallel
+
+      - name: Setup OBS SDK (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Download prebuilt OBS dependencies
+          deps_url="https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/macos-deps-${{ env.OBS_DEPS_VERSION }}-universal.tar.xz"
+          echo "Downloading obs-deps from $deps_url"
+          curl -L -o obs-deps.tar.xz "$deps_url"
+          mkdir -p obs-deps
+          tar xf obs-deps.tar.xz -C obs-deps
+
+          # Download obs-studio source
+          obs_url="https://github.com/obsproject/obs-studio/archive/refs/tags/${{ env.OBS_VERSION }}.zip"
+          echo "Downloading obs-studio ${{ env.OBS_VERSION }}"
+          curl -L -o obs-src.zip "$obs_url"
+          unzip -q obs-src.zip
+
+          # Configure obs-studio (minimal).
+          # OBS's cmake/macos/compilerconfig.cmake REQUIRES the Xcode generator
+          # on macOS. Xcode is multi-config — --config Release everywhere.
+          cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" -G Xcode \
+            -DENABLE_PLUGINS=OFF \
+            -DENABLE_FRONTEND=OFF \
+            -DENABLE_UI=OFF \
+            -DCMAKE_ENABLE_SCRIPTING=OFF \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+          # Build libobs target (Xcode exposes it as `libobs`, not `obs`).
+          cmake --build obs-build --target libobs --config Release --parallel
+
+      # ==================================================================
+      # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
+      # ==================================================================
+
+      - name: Configure plugin (with OBS deps)
+        shell: bash
+        run: |
+          # libobs_DIR + w32-pthreads_DIR (Windows only) point CMake at the
+          # config-mode packages generated inside the OBS build tree.
+          EXTRA_ARGS=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
+          fi
+          cmake -B build -S . ${{ matrix.cmake_generator }} \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DDANCEHAP_BUILD_TESTS=OFF \
+            -DDANCEHAP_WITH_OBS_DEPS=ON \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -Dlibobs_DIR="$PWD/obs-build/libobs" \
+            $EXTRA_ARGS
+
+      - name: Build plugin
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
 
-      # --- Run tests ----------------------------------------------------
-      - name: Run unit tests
-        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
+      # ==================================================================
+      # Phase 3: Build + run unit tests (stub mode, no OBS runtime needed)
+      # ==================================================================
 
-      # --- Upload plugin artifact --------------------------------------
+      - name: Configure & build tests (stub mode)
+        shell: bash
+        run: |
+          cmake -B build-tests -S . \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DDANCEHAP_BUILD_TESTS=ON \
+            -DDANCEHAP_WITH_OBS_DEPS=OFF
+          cmake --build build-tests --parallel
+
+      - name: Run unit tests
+        run: ctest --test-dir build-tests --output-on-failure
+
+      # ==================================================================
+      # Phase 4: Locate plugin + smoke test
+      # ==================================================================
+
       # On Windows (Visual Studio multi-config), the DLL lands in
-      # build/Release/dancehap.dll; on macOS (Make single-config), it's
-      # build/dancehap.so. Use a wildcard to cover both layouts without
-      # duplicating per-OS steps.
+      # build/Release/dancehap.dll; on macOS (single-config), it's
+      # build/dancehap.so. Use a wildcard to cover both layouts (pitfall #4).
       - name: Locate built plugin (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -79,6 +185,20 @@ jobs:
         run: |
           mkdir -p build/artifact
           cp "$(find build -name 'dancehap.so' -type f | head -1)" build/artifact/dancehap.so
+
+      - name: Smoke test (symbol export check)
+        shell: bash
+        run: |
+          PLUGIN="build/artifact/dancehap.${{ matrix.artifact_ext }}"
+          if [ ! -f "$PLUGIN" ]; then
+            echo "ERROR: plugin artifact not found at $PLUGIN"
+            exit 1
+          fi
+          ./tests/smoke/check_source_registered.sh "$PLUGIN"
+
+      # ==================================================================
+      # Phase 5: Upload artifact
+      # ==================================================================
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4

@@ -36,24 +36,43 @@ configure_file(
     @ONLY
 )
 
-# --- OBS dependency (optional for skeleton) -----------------------------
-# When DANCEHAP_WITH_OBS_DEPS is ON, cmake/FindLibObs.cmake resolves the
-# real libobs headers + import library.  When OFF (the default for the
-# Phase 1.0 skeleton) the plugin compiles in "stub" mode: it defines the
-# OBS module entry points directly without including <obs-module.h>.
-# Phase 1.1 will flip the default to ON once CI ships prebuilt OBS deps.
+# --- OBS dependency (optional) --------------------------------------------
+# When DANCEHAP_WITH_OBS_DEPS is ON, we resolve the real libobs headers +
+# import library. Two strategies:
+#   1. OBS's own CMake config (libobsConfig.cmake) — preferred, produced by
+#      `cmake --install --component Development` in CI.
+#   2. Our cmake/FindLibObs.cmake — fallback for manual setups.
+# When OFF (default for local dev) the plugin compiles in "stub" mode.
 if(DANCEHAP_WITH_OBS_DEPS)
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-    find_package(LibObs REQUIRED)
+    find_package(libobs CONFIG QUIET)
+    if(TARGET OBS::libobs)
+        message(STATUS "OBS SDK: using libobsConfig.cmake (OBS::libobs)")
+        set(DANCEHAP_OBS_LIB OBS::libobs)
+    else()
+        find_package(LibObs REQUIRED)
+        message(STATUS "OBS SDK: using FindLibObs.cmake (LibObs::LibObs)")
+        set(DANCEHAP_OBS_LIB LibObs::LibObs)
+    endif()
 endif()
 
 # --- Plugin object library (shared between MODULE and unit tests) -------
-# We compile plugin.cpp once into an OBJECT library so both the MODULE
-# target (the actual OBS plugin .dll/.so) and the unit-test executable
-# can consume it without duplicate compilation.
-add_library(dancehap_objs OBJECT
+# We compile plugin + hap_clip_source once into an OBJECT library so both
+# the MODULE target (the actual OBS plugin .dll/.so) and the unit-test
+# executable can consume it without duplicate compilation.
+#
+# When DANCEHAP_WITH_OBS_DEPS is OFF, we also compile obs_stub.cpp which
+# provides functional stub implementations of the OBS API so the code
+# compiles and tests run without a libobs installation.
+set(DANCEHAP_SOURCES
     src/plugin.cpp
+    src/hap_clip_source.cpp
 )
+if(NOT DANCEHAP_WITH_OBS_DEPS)
+    list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)
+endif()
+
+add_library(dancehap_objs OBJECT ${DANCEHAP_SOURCES})
 
 target_include_directories(dancehap_objs PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -63,7 +82,7 @@ target_include_directories(dancehap_objs PRIVATE
 target_compile_features(dancehap_objs PRIVATE cxx_std_17)
 
 if(DANCEHAP_WITH_OBS_DEPS)
-    target_link_libraries(dancehap_objs PRIVATE LibObs::LibObs)
+    target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_OBS_LIB})
     target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_OBS=1)
 endif()
 
@@ -79,7 +98,7 @@ target_compile_features(dancehap PRIVATE cxx_std_17)
 
 # Propagate OBS definitions to the MODULE link step.
 if(DANCEHAP_WITH_OBS_DEPS)
-    target_link_libraries(dancehap PRIVATE LibObs::LibObs)
+    target_link_libraries(dancehap PRIVATE ${DANCEHAP_OBS_LIB})
 endif()
 
 # OBS plugins use no "lib" prefix and a platform-specific extension.
@@ -118,7 +137,7 @@ endif()
 
 # --- Status summary -----------------------------------------------------
 message(STATUS "=========================================================")
-message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.0 skeleton")
+message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.1 hap_clip_source")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Platform     : ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
 message(STATUS "  OBS deps     : ${DANCEHAP_WITH_OBS_DEPS}")
