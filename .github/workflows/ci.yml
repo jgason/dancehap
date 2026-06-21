@@ -84,8 +84,9 @@ jobs:
             -DCMAKE_ENABLE_SCRIPTING=OFF `
             "-DCMAKE_PREFIX_PATH=${{ github.workspace }}\obs-deps"
 
-          # Build only the libobs target
-          cmake --build obs-build --target obs --config Release --parallel
+          # Build ALL targets (not just 'obs') so dependencies like w32-pthreads
+          # are produced — required by `cmake --install` afterwards.
+          cmake --build obs-build --config Release --parallel
 
           # Install development files (headers + import library + CMake config)
           cmake --install obs-build --component Development --config Release --prefix "${{ github.workspace }}\obs-sdk"
@@ -106,17 +107,20 @@ jobs:
           curl -L -o obs-src.zip "$obs_url"
           unzip -q obs-src.zip
 
-          # Configure obs-studio (minimal)
-          cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" \
-            -DCMAKE_BUILD_TYPE=Release \
+          # Configure obs-studio (minimal).
+          # OBS's cmake/macos/compilerconfig.cmake REQUIRES the Xcode generator
+          # on macOS (errors out otherwise). Xcode is multi-config, so we pass
+          # --config Release to every build/install step.
+          cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" -G Xcode \
             -DENABLE_PLUGINS=OFF \
             -DENABLE_FRONTEND=OFF \
             -DENABLE_UI=OFF \
             -DCMAKE_ENABLE_SCRIPTING=OFF \
-            -DCMAKE_PREFIX_PATH="$PWD/obs-deps"
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
-          # Build only the libobs target
-          cmake --build obs-build --target obs --config Release --parallel
+          # Build ALL targets (multi-config: --config Release required)
+          cmake --build obs-build --config Release --parallel
 
           # Install development files
           cmake --install obs-build --component Development --config Release --prefix "$PWD/obs-sdk"
