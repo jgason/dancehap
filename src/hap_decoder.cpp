@@ -170,13 +170,17 @@ HapFrameInfo parse_hap_frame(const uint8_t *data, size_t size)
 namespace dancehap {
 
 // Map HapTextureFormat to OBS gs_color_format.
+// OBS 31 gs_color_format supports GS_DXT1, GS_DXT3, GS_DXT5 but NOT BC7.
+// HAPQ (DXT5-YCoCg) maps to DXT5 — the YCoCg color space conversion happens
+// in a shader (Phase 5 polish). For now the raw DXT5 bytes are uploaded,
+// which will display with wrong colors for HAPQ but won't crash.
 #ifdef DANCEHAP_HAVE_OBS
 static gs_color_format map_to_gs_format(HapTextureFormat fmt)
 {
     switch (fmt) {
     case HapTextureFormat::DXT1: return GS_DXT1;
     case HapTextureFormat::DXT5: return GS_DXT5;
-    case HapTextureFormat::BC7:  return GS_BC7;
+    case HapTextureFormat::BC7:  return GS_DXT5;  // TODO Phase 5: BC7 not in OBS, fallback DXT5
     default:                     return GS_UNKNOWN;
     }
 }
