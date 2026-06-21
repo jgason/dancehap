@@ -32,14 +32,16 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------+
 // OBS audio output types (real OBS mode only)
 // ---------------------------------------------------------------------------+
 #ifdef DANCEHAP_HAVE_OBS
-// obs_compat.hpp already pulled in via clip_player.hpp → hap_demuxer.hpp.
-// Real OBS headers provide: obs_source_output_audio_data, obs_source_audio,
-// AUDIO_FORMAT_FLOAT_PLANAR, SPEAKERS_*, os_gettime_ns.
+// Pull in the OBS headers that provide the audio output API + high-res clock.
+// obs_source_output_audio() and struct obs_source_audio live in obs.h (already
+// included via obs_compat.hpp), but os_gettime_ns() needs util/platform.h.
+#include <util/platform.h>
 #endif
 
 // ---------------------------------------------------------------------------+
@@ -100,10 +102,12 @@ struct hap_clip_context {
         }
 
         for (int c = 0; c < ch; ++c) {
-            osa.data[c] = planar[c].data();
+            // OBS audio planes are typed const uint8_t* regardless of sample
+            // format; for FLOAT_PLANAR we reinterpret the float buffer.
+            osa.data[c] = reinterpret_cast<const uint8_t *>(planar[c].data());
         }
 
-        obs_source_output_audio_data(source, &osa);
+        obs_source_output_audio(source, &osa);
     }
 #endif // DANCEHAP_HAVE_OBS
 
