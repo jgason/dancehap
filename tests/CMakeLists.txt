@@ -48,5 +48,12 @@ target_compile_definitions(dancehap_unit_tests PRIVATE
 target_compile_features(dancehap_unit_tests PRIVATE cxx_std_17)
 
 # Auto-discover tests for ctest.
+# On Windows, the default 5-second timeout for test discovery is too short:
+# the .exe takes longer to start (DLL loading + Defender scan), causing
+# 'Process terminated due to timeout' during configure. Bump to 30s and
+# use PRE_TEST mode so discovery runs at test-time (when the exe is already
+# built and warmed up) instead of at build-time.
 include(GoogleTest)
-gtest_discover_tests(dancehap_unit_tests)
+gtest_discover_tests(dancehap_unit_tests
+    DISCOVERY_MODE PRE_TEST
+    PROPERTIES TIMEOUT 30)
