@@ -26,14 +26,15 @@ l'affiche correctement dans une scène. Pas de matting, pas d'overlay, pas d'UI
 au-delà de la property view OBS standard.
 
 **Livrables** :
-- [ ] Skeleton CMake + build Windows + macOS
-- [ ] Wrapper source OBS `hap_clip_source` enregistré
+- [x] Skeleton CMake + build Windows + macOS (Phase 1.0, PR #1)
+- [x] Wrapper source OBS `hap_clip_source` enregistré (Phase 1.1, PR #2)
+- [x] Property view OBS : chemin du fichier, toggle loop, toggle autoplay (Phase 1.1)
+- [x] Tests unitaires GoogleTest (22 tests, stub mode) (Phase 1.1)
+- [x] CI GitHub Actions matrix Win+macOS avec real-OBS build (Phase 1.1)
 - [ ] Demux container (FFmpeg/libav) → extraction flux HAP + audio
 - [ ] Décode HAP : Snappy decompress → upload texture DXT1/DXT5/BC7
 - [ ] Routing audio OBS natif
 - [ ] États : idle / loading / playing / looping / ended
-- [ ] Property view OBS : chemin du fichier, toggle loop, toggle play
-- [ ] Tests unitaires (Snappy, parsing container, états)
 - [ ] Smoke test OBS Windows
 
 **Critère de sortie** : on peut ajouter une source « DanceHAP Clip » dans OBS,
