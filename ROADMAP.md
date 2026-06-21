@@ -33,9 +33,9 @@ au-delà de la property view OBS standard.
 - [x] CI GitHub Actions matrix Win+macOS avec real-OBS build (Phase 1.1)
 - [x] Demux container (FFmpeg/libav) → extraction flux HAP + audio (Phase 1.2, PR #3)
 - [x] Décode HAP : Snappy decompress → upload texture DXT1/DXT5 (Phase 1.3, PR #4)
-- [ ] Routing audio OBS natif
-- [ ] États : idle / loading / playing / looping / ended
-- [ ] Smoke test OBS Windows
+- [ ] Routing audio OBS natif (infra en place Phase 1.4, décodage AAC = Phase 1.5+)
+- [x] États : idle / loading / playing / looping / ended (Phase 1.4 ClipPlayer, PR #5)
+- [ ] Smoke test OBS Windows (SMOKE-1.4.md rédigé, à exécuter post-merge)
 
 **Critère de sortie** : on peut ajouter une source « DanceHAP Clip » dans OBS,
 pointer vers un .mov HAP, et voir la vidéo + entendre l'audio en synchro.

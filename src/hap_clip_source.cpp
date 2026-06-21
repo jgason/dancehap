@@ -1,41 +1,56 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
 //
-// hap_clip_source.cpp — OBS source registration + property view.
+// hap_clip_source.cpp — OBS source registration + property view + playback.
 //
-// Phase 1.1 deliverables (PLAN-PHASE-1.md étape 1.1):
+// Phase 1.4: refactored to delegate playback to ClipPlayer (1.4.1-1.4.4).
+//   • hap_clip_context now owns a dancehap::ClipPlayer instead of raw
+//     demuxer + decoder pointers.
+//   • video_tick drives the ClipPlayer (tick + audio pull/push).
+//   • video_render draws the ClipPlayer's decoded texture.
+//   • Audio is pushed to OBS via obs_source_output_audio_data (real OBS
+//     mode only). In stub mode, the player still advances its clock from
+//     pullAudio so timing logic is exercised.
+//
+// Phase 1.1 deliverables (preserved):
 //   • obs_source_info with id "dancehap_hap_clip"
 //   • get_name → "DanceHAP Clip"
-//   • create / destroy (alloc/free source context)
 //   • get_defaults (path="", loop=true, autoplay=false)
 //   • get_properties (file path + loop toggle + autoplay toggle)
-//   • update (re-read settings on change)
-//   • activate / deactivate (log)
-//   • video_tick / video_render (safe no-ops — black output)
-//   • Registration via obs_register_source in register_hap_clip_source()
+//   • activate / deactivate
+//   • Registration via obs_register_source
 //
 // output_flags justification:
-//   VIDEO            — the source produces a video texture (HAP frames)
-//   AUDIO            — the source produces audio (clip's audio track)
-//   CUSTOM_DRAW      — rendering is handled via our own gs_texture upload,
-//                      not OBS's default effect-based draw
-//   DO_NOT_DUPLICATE — OBS should not auto-duplicate this source for
-//                      monitoring/preview; A/V sync is managed internally
+//   VIDEO            — produces a video texture (HAP frames)
+//   AUDIO            — produces audio (clip's audio track)
+//   CUSTOM_DRAW      — rendering via our own gs_texture upload
+//   DO_NOT_DUPLICATE — A/V sync managed internally
 
 #include "hap_clip_source.hpp"
-#include "hap_demuxer.hpp"
-#include "hap_decoder.hpp"
+#include "clip_player.hpp"
 #include "dancehap/version.h"
 
 #include <cstring>
 #include <string>
-#include <memory>
 
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------+
+// OBS audio output types (real OBS mode only)
+// ---------------------------------------------------------------------------+
+#ifdef DANCEHAP_HAVE_OBS
+// obs_compat.hpp already pulled in via clip_player.hpp → hap_demuxer.hpp.
+// Real OBS headers provide: obs_source_output_audio_data, obs_source_audio,
+// AUDIO_FORMAT_FLOAT_PLANAR, SPEAKERS_*, os_gettime_ns.
+#endif
+
+// ---------------------------------------------------------------------------+
 // Per-instance context
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------+
 
 namespace {
+
+// Audio chunk size pulled per video_tick call (~21 ms at 48 kHz ≈ 1008 frames).
+// This matches OBS's typical audio processing block size.
+static constexpr int64_t AUDIO_CHUNK_US = 21'000;
 
 struct hap_clip_context {
     std::string file_path;
@@ -43,51 +58,70 @@ struct hap_clip_context {
     bool autoplay  = false;
     bool active    = false;
 
-    // Phase 1.2: container demuxer.
-    // Phase 1.3: HAP decoder.
-    // Owned via unique_ptr so the context stays movable/copyable-friendly
-    // and resources are destroyed deterministically in hap_clip_destroy.
-    std::unique_ptr<dancehap::HapDemuxer> demuxer;
-    std::unique_ptr<dancehap::HapDecoder> decoder;
-    dancehap::DemuxState demux_state = dancehap::DemuxState::Idle;
+    // Phase 1.4: ClipPlayer owns demuxer + decoder + timing + loop logic.
+    dancehap::ClipPlayer player;
 
-    /// Open (or re-open) the demuxer on the current file_path.
-    /// On failure: logs a warning and leaves the source valid but without
-    /// video/audio — never crashes OBS.
-    void open_demuxer()
+#ifdef DANCEHAP_HAVE_OBS
+    obs_source_t *source = nullptr;  // for obs_source_output_audio_data
+
+    /// Push interleaved float audio to OBS as planar float.
+    /// Converts AudioOutput.samples (interleaved) → obs_source_audio (planar).
+    void push_audio(const dancehap::AudioOutput &audio)
     {
-        demux_state = dancehap::DemuxState::Loading;
-        if (!demuxer) demuxer = std::make_unique<dancehap::HapDemuxer>();
+        if (!source || !audio.valid || audio.frames <= 0) return;
 
-        if (file_path.empty()) {
-            demux_state = dancehap::DemuxState::Idle;
-            return;
+        // Planar buffers (one per channel). Allocate on each call — small
+        // (frames * channels * 4 bytes, typically < 4 KB).
+        std::vector<float> planar[8];
+        int ch = audio.channels < 8 ? audio.channels : 8;
+        for (int c = 0; c < ch; ++c) {
+            planar[c].resize(audio.frames);
+            for (int i = 0; i < audio.frames; ++i) {
+                planar[c][i] = audio.samples[
+                    static_cast<size_t>(i) * audio.channels + c];
+            }
         }
 
-        if (!demuxer->open(file_path)) {
-            blog(LOG_WARNING, "[DanceHAP] failed to open clip '%s': %s",
-                 file_path.c_str(), demuxer->getLastError().c_str());
-            demux_state = dancehap::DemuxState::Error;
-            return;
+        struct obs_source_audio osa = {};
+        osa.format         = AUDIO_FORMAT_FLOAT_PLANAR;
+        osa.samples_per_sec = static_cast<uint32_t>(audio.sample_rate);
+        osa.frames         = static_cast<uint32_t>(audio.frames);
+        osa.timestamp      = os_gettime_ns();
+
+        switch (ch) {
+        case 1:  osa.speakers = SPEAKERS_MONO;     break;
+        case 2:  osa.speakers = SPEAKERS_STEREO;   break;
+        case 3:  osa.speakers = SPEAKERS_2POINT1;  break;
+        case 4:  osa.speakers = SPEAKERS_4POINT0;  break;
+        case 5:  osa.speakers = SPEAKERS_4POINT1;  break;
+        case 6:  osa.speakers = SPEAKERS_5POINT1;  break;
+        case 7:  osa.speakers = SPEAKERS_5POINT1;  break;  // OBS max layout
+        default: osa.speakers = SPEAKERS_STEREO;   break;
         }
 
-        demux_state = demuxer->getState();
-        const auto &vi = demuxer->getVideoInfo();
-        blog(LOG_INFO, "[DanceHAP] clip opened: %s %dx%d %.3fs (audio=%s)",
-             dancehap::hap_variant_to_string(vi.variant),
-             vi.width, vi.height, demuxer->getDuration(),
-             demuxer->hasAudio() ? "yes" : "no");
+        for (int c = 0; c < ch; ++c) {
+            osa.data[c] = planar[c].data();
+        }
 
-        // Phase 1.3: create decoder with video info from demuxer.
-        decoder = std::make_unique<dancehap::HapDecoder>();
-        decoder->setVideoInfo(vi);
+        obs_source_output_audio_data(source, &osa);
+    }
+#endif // DANCEHAP_HAVE_OBS
+
+    /// Load (or reload) the clip at file_path into the player.
+    void load_clip()
+    {
+        player.setLoop(loop);
+        if (file_path.empty()) return;
+
+        if (!player.load(file_path)) {
+            blog(LOG_WARNING, "[DanceHAP] failed to load clip '%s': %s",
+                 file_path.c_str(), player.getLastError().c_str());
+        }
     }
 
-    void close_demuxer()
+    void unload_clip()
     {
-        decoder.reset();  // Phase 1.3: release decoder + texture
-        if (demuxer) demuxer->close();
-        demux_state = dancehap::DemuxState::Idle;
+        player.stop();
     }
 };
 
@@ -100,9 +134,12 @@ const char *hap_clip_get_name(void * /*type_data*/)
     return HAP_CLIP_SOURCE_NAME;
 }
 
-void *hap_clip_create(obs_data_t *settings, obs_source_t * /*source*/)
+void *hap_clip_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *ctx = new hap_clip_context();
+#ifdef DANCEHAP_HAVE_OBS
+    ctx->source = source;
+#endif
     if (settings) {
         const char *path = obs_data_get_string(settings, "path");
         if (path) ctx->file_path = path;
@@ -113,8 +150,8 @@ void *hap_clip_create(obs_data_t *settings, obs_source_t * /*source*/)
                    "(path='%s', loop=%d, autoplay=%d)",
          ctx->file_path.c_str(), (int)ctx->loop, (int)ctx->autoplay);
 
-    // Phase 1.2: open the container if a path was provided.
-    ctx->open_demuxer();
+    // Phase 1.4: load the clip via ClipPlayer.
+    ctx->load_clip();
 
     return ctx;
 }
@@ -126,9 +163,7 @@ void hap_clip_destroy(void *data)
     blog(LOG_INFO, "[DanceHAP] hap_clip_source destroyed (path='%s')",
          ctx->file_path.c_str());
 
-    // Phase 1.2: release demuxer resources before freeing the context.
-    ctx->close_demuxer();
-
+    ctx->unload_clip();
     delete ctx;
 }
 
@@ -145,7 +180,6 @@ obs_properties_t *hap_clip_get_properties(void * /*data*/)
     obs_properties_t *props = obs_properties_create();
     if (!props) return nullptr;
 
-    // File picker — HAP clips in MOV/MP4 containers.
     obs_properties_add_path(
         props,
         "path",
@@ -154,10 +188,7 @@ obs_properties_t *hap_clip_get_properties(void * /*data*/)
         "HAP clips (*.mov *.mp4)",
         "");
 
-    // Loop toggle.
     obs_properties_add_bool(props, "loop", "Loop");
-
-    // Autoplay toggle.
     obs_properties_add_bool(props, "autoplay", "Autoplay");
 
     return props;
@@ -169,17 +200,23 @@ void hap_clip_update(void *data, obs_data_t *settings)
     if (!ctx || !settings) return;
 
     const char *path = obs_data_get_string(settings, "path");
+    bool new_loop = obs_data_get_bool(settings, "loop");
+    bool new_autoplay = obs_data_get_bool(settings, "autoplay");
+
     if (path && ctx->file_path != path) {
         blog(LOG_INFO, "[DanceHAP] path changed: '%s' -> '%s'",
              ctx->file_path.c_str(), path);
         ctx->file_path = path;
-
-        // Phase 1.2: close old demuxer, open new file.
-        ctx->close_demuxer();
-        ctx->open_demuxer();
+        ctx->loop = new_loop;
+        ctx->load_clip();  // ClipPlayer.load replaces current clip
+    } else {
+        // Loop setting may have changed — sync to player.
+        if (ctx->loop != new_loop) {
+            ctx->loop = new_loop;
+            ctx->player.setLoop(new_loop);
+        }
     }
-    ctx->loop     = obs_data_get_bool(settings, "loop");
-    ctx->autoplay = obs_data_get_bool(settings, "autoplay");
+    ctx->autoplay = new_autoplay;
 }
 
 void hap_clip_activate(void *data)
@@ -198,59 +235,73 @@ void hap_clip_deactivate(void *data)
     blog(LOG_INFO, "[DanceHAP] hap_clip_source deactivated");
 }
 
-void hap_clip_video_tick(void *data, float /*seconds*/)
+// ---------------------------------------------------------------------------
+// Phase 1.4: video_tick drives the ClipPlayer.
+// Audio master clock: when the clip has audio, pull audio + advance the
+// clock from audio output (ADR-007). When no audio, use wall-clock dt.
+// ---------------------------------------------------------------------------
+
+void hap_clip_video_tick(void *data, float seconds)
 {
     auto *ctx = static_cast<hap_clip_context *>(data);
-    if (!ctx || !ctx->demuxer || !ctx->decoder) return;
-    if (ctx->demux_state != dancehap::DemuxState::Ready) return;
+    if (!ctx) return;
+    if (ctx->player.getState() != dancehap::PlayerState::Playing) return;
 
-    // Phase 1.3: read next video packet and decode it.
-    // Phase 1.4 will add proper FPS timing + loop + A/V sync.
-    dancehap::DemuxPacket pkt = ctx->demuxer->readNextVideoPacket();
-    if (pkt.valid) {
-        ctx->decoder->decode(pkt);
+    if (ctx->player.hasAudio()) {
+        // Audio master clock (ADR-007).
+        dancehap::AudioOutput audio =
+            ctx->player.pullAudio(AUDIO_CHUNK_US);
+
+        if (audio.valid) {
+#ifdef DANCEHAP_HAVE_OBS
+            ctx->push_audio(audio);
+#endif
+            ctx->player.advanceAudioClock(audio.duration_us);
+        }
+        // tick(0) decodes due frames — clock already advanced by audio.
+        ctx->player.tick(0.0f);
+    } else {
+        // Video master clock (no audio in clip).
+        ctx->player.tick(seconds);
     }
-    // EOF / loop handling arrives in Phase 1.4.
 }
 
 void hap_clip_video_render(void *data, gs_effect_t *effect)
 {
     auto *ctx = static_cast<hap_clip_context *>(data);
-    if (!ctx || !ctx->decoder) return;
+    if (!ctx) return;
 
-    gs_texture_t *tex = ctx->decoder->getTexture();
+    gs_texture_t *tex = ctx->player.getTexture();
     if (!tex) return;  // stub mode or no decoded frame yet
 
 #ifdef DANCEHAP_HAVE_OBS
-    // Draw the decoded HAP texture using the default OBS effect.
     gs_effect_set_texture(
         gs_effect_get_param_by_name(effect, "image"), tex);
     gs_draw_sprite(tex, 0,
-                   ctx->decoder->getWidth(),
-                   ctx->decoder->getHeight());
+                   ctx->player.getVideoWidth(),
+                   ctx->player.getVideoHeight());
 #endif
     // Stub mode: no OBS graphics API — safe no-op.
 }
 
 // ---------------------------------------------------------------------------
-// Dimensions — report clip size from the demuxer (Phase 1.2).
-// If no clip is loaded, return 0 (OBS will skip rendering).
+// Dimensions — report clip size from the player's video info.
 // ---------------------------------------------------------------------------
 
 uint32_t hap_clip_get_width(void *data)
 {
     auto *ctx = static_cast<hap_clip_context *>(data);
-    if (!ctx || !ctx->demuxer || !ctx->demuxer->hasVideo())
+    if (!ctx || !ctx->player.hasVideo())
         return 0;
-    return (uint32_t)ctx->demuxer->getVideoInfo().width;
+    return (uint32_t)ctx->player.getVideoInfo().width;
 }
 
 uint32_t hap_clip_get_height(void *data)
 {
     auto *ctx = static_cast<hap_clip_context *>(data);
-    if (!ctx || !ctx->demuxer || !ctx->demuxer->hasVideo())
+    if (!ctx || !ctx->player.hasVideo())
         return 0;
-    return (uint32_t)ctx->demuxer->getVideoInfo().height;
+    return (uint32_t)ctx->player.getVideoInfo().height;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +322,7 @@ struct obs_source_info build_hap_clip_info()
     info.get_name       = hap_clip_get_name;
     info.create         = hap_clip_create;
     info.destroy        = hap_clip_destroy;
-    info.get_width      = hap_clip_get_width;   // Phase 1.2: report clip dimensions
+    info.get_width      = hap_clip_get_width;
     info.get_height     = hap_clip_get_height;
     info.get_defaults   = hap_clip_get_defaults;
     info.get_properties = hap_clip_get_properties;
