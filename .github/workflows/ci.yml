@@ -60,10 +60,30 @@ jobs:
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
 
       # --- Upload plugin artifact --------------------------------------
+      # On Windows (Visual Studio multi-config), the DLL lands in
+      # build/Release/dancehap.dll; on macOS (Make single-config), it's
+      # build/dancehap.so. Use a wildcard to cover both layouts without
+      # duplicating per-OS steps.
+      - name: Locate built plugin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $plugin = Get-ChildItem -Path build -Recurse -Filter 'dancehap.dll' | Select-Object -First 1
+          if (-not $plugin) { throw "dancehap.dll not found under build/" }
+          New-Item -ItemType Directory -Force -Path build\artifact | Out-Null
+          Copy-Item $plugin.FullName -Destination build\artifact\dancehap.dll
+          Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
+
+      - name: Locate built plugin (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/artifact
+          cp "$(find build -name 'dancehap.so' -type f | head -1)" build/artifact/dancehap.so
+
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
         with:
           name: dancehap-plugin-${{ matrix.os }}
-          path: build/dancehap.${{ matrix.artifact_ext }}
+          path: build/artifact/dancehap.${{ matrix.artifact_ext }}
           if-no-files-found: error
           retention-days: 14
