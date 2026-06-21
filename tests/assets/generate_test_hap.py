@@ -156,7 +156,6 @@ def encode_hapa(
         "-c:v", "hap",
         "-format", "hap_alpha",
         "-pix_fmt", "rgba",
-        "-chunks", "1",
         # --- Audio encoder: AAC ---
         "-c:a", "aac",
         "-b:a", "64k",
