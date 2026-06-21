@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
+#
+# DanceHAP CI — build matrix Windows + macOS (ADR-001).
+# Phase 1.0 skeleton: configure, build plugin MODULE, run GoogleTest.
+#
+# Inspiration: obsproject/obs-plugintemplate CI workflow.
+# Per ADR-001, Linux is a non-goal and is NOT in the matrix.
+
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cmake_generator: "-G 'Visual Studio 17 2022' -A x64"
+            artifact_ext: dll
+          - os: macos-latest
+            cmake_generator: ""
+            artifact_ext: so
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # --- Checkout -----------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Python + deps for HAP test asset generation ------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps (numpy)
+        run: pip install numpy
+
+      # --- ffmpeg (preinstalled on GitHub runners; verify) -------------
+      - name: Verify ffmpeg
+        run: ffmpeg -version
+
+      # --- Generate test HAP asset -------------------------------------
+      - name: Generate test HAP asset
+        run: python tests/assets/generate_test_hap.py
+
+      - name: Verify test HAP asset (ffprobe)
+        run: ffprobe -v error -show_entries stream=codec_name,codec_tag_string,width,height,duration -show_entries format=duration -of json tests/assets/sample_hapa_5s.mov
+
+      # --- Configure CMake ---------------------------------------------
+      - name: Configure CMake
+        run: cmake -B build -S . ${{ matrix.cmake_generator }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DDANCEHAP_BUILD_TESTS=ON
+
+      # --- Build --------------------------------------------------------
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      # --- Run tests ----------------------------------------------------
+      - name: Run unit tests
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
+
+      # --- Upload plugin artifact --------------------------------------
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dancehap-plugin-${{ matrix.os }}
+          path: build/dancehap.${{ matrix.artifact_ext }}
+          if-no-files-found: error
+          retention-days: 14
