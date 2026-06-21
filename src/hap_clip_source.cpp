@@ -23,10 +23,12 @@
 //                      monitoring/preview; A/V sync is managed internally
 
 #include "hap_clip_source.hpp"
+#include "hap_demuxer.hpp"
 #include "dancehap/version.h"
 
 #include <cstring>
 #include <string>
+#include <memory>
 
 // ---------------------------------------------------------------------------
 // Per-instance context
@@ -39,6 +41,46 @@ struct hap_clip_context {
     bool loop      = true;
     bool autoplay  = false;
     bool active    = false;
+
+    // Phase 1.2: container demuxer.
+    // Owned via unique_ptr so the context stays movable/copyable-friendly
+    // and the demuxer is destroyed deterministically in hap_clip_destroy.
+    std::unique_ptr<dancehap::HapDemuxer> demuxer;
+    dancehap::DemuxState demux_state = dancehap::DemuxState::Idle;
+
+    /// Open (or re-open) the demuxer on the current file_path.
+    /// On failure: logs a warning and leaves the source valid but without
+    /// video/audio — never crashes OBS.
+    void open_demuxer()
+    {
+        demux_state = dancehap::DemuxState::Loading;
+        if (!demuxer) demuxer = std::make_unique<dancehap::HapDemuxer>();
+
+        if (file_path.empty()) {
+            demux_state = dancehap::DemuxState::Idle;
+            return;
+        }
+
+        if (!demuxer->open(file_path)) {
+            blog(LOG_WARNING, "[DanceHAP] failed to open clip '%s': %s",
+                 file_path.c_str(), demuxer->getLastError().c_str());
+            demux_state = dancehap::DemuxState::Error;
+            return;
+        }
+
+        demux_state = demuxer->getState();
+        const auto &vi = demuxer->getVideoInfo();
+        blog(LOG_INFO, "[DanceHAP] clip opened: %s %dx%d %.3fs (audio=%s)",
+             dancehap::hap_variant_to_string(vi.variant),
+             vi.width, vi.height, demuxer->getDuration(),
+             demuxer->hasAudio() ? "yes" : "no");
+    }
+
+    void close_demuxer()
+    {
+        if (demuxer) demuxer->close();
+        demux_state = dancehap::DemuxState::Idle;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +104,10 @@ void *hap_clip_create(obs_data_t *settings, obs_source_t * /*source*/)
     blog(LOG_INFO, "[DanceHAP] hap_clip_source created "
                    "(path='%s', loop=%d, autoplay=%d)",
          ctx->file_path.c_str(), (int)ctx->loop, (int)ctx->autoplay);
+
+    // Phase 1.2: open the container if a path was provided.
+    ctx->open_demuxer();
+
     return ctx;
 }
 
@@ -71,6 +117,10 @@ void hap_clip_destroy(void *data)
     if (!ctx) return;
     blog(LOG_INFO, "[DanceHAP] hap_clip_source destroyed (path='%s')",
          ctx->file_path.c_str());
+
+    // Phase 1.2: release demuxer resources before freeing the context.
+    ctx->close_demuxer();
+
     delete ctx;
 }
 
@@ -111,11 +161,14 @@ void hap_clip_update(void *data, obs_data_t *settings)
     if (!ctx || !settings) return;
 
     const char *path = obs_data_get_string(settings, "path");
-    if (path && path != ctx->file_path) {
-        blog(LOG_INFO, "[DanceHAP] path changed: '%s' → '%s'",
+    if (path && ctx->file_path != path) {
+        blog(LOG_INFO, "[DanceHAP] path changed: '%s' -> '%s'",
              ctx->file_path.c_str(), path);
         ctx->file_path = path;
-        // Phase 1.2+: trigger reload of HAP decoder here.
+
+        // Phase 1.2: close old demuxer, open new file.
+        ctx->close_demuxer();
+        ctx->open_demuxer();
     }
     ctx->loop     = obs_data_get_bool(settings, "loop");
     ctx->autoplay = obs_data_get_bool(settings, "autoplay");
@@ -149,6 +202,27 @@ void hap_clip_video_render(void * /*data*/, gs_effect_t * /*effect*/)
 }
 
 // ---------------------------------------------------------------------------
+// Dimensions — report clip size from the demuxer (Phase 1.2).
+// If no clip is loaded, return 0 (OBS will skip rendering).
+// ---------------------------------------------------------------------------
+
+uint32_t hap_clip_get_width(void *data)
+{
+    auto *ctx = static_cast<hap_clip_context *>(data);
+    if (!ctx || !ctx->demuxer || !ctx->demuxer->hasVideo())
+        return 0;
+    return (uint32_t)ctx->demuxer->getVideoInfo().width;
+}
+
+uint32_t hap_clip_get_height(void *data)
+{
+    auto *ctx = static_cast<hap_clip_context *>(data);
+    if (!ctx || !ctx->demuxer || !ctx->demuxer->hasVideo())
+        return 0;
+    return (uint32_t)ctx->demuxer->getVideoInfo().height;
+}
+
+// ---------------------------------------------------------------------------
 // Build the obs_source_info struct
 // ---------------------------------------------------------------------------
 
@@ -166,8 +240,8 @@ struct obs_source_info build_hap_clip_info()
     info.get_name       = hap_clip_get_name;
     info.create         = hap_clip_create;
     info.destroy        = hap_clip_destroy;
-    info.get_width      = nullptr;   // Phase 1.4: report clip dimensions
-    info.get_height     = nullptr;
+    info.get_width      = hap_clip_get_width;   // Phase 1.2: report clip dimensions
+    info.get_height     = hap_clip_get_height;
     info.get_defaults   = hap_clip_get_defaults;
     info.get_properties = hap_clip_get_properties;
     info.update         = hap_clip_update;
