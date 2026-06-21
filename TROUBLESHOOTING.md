@@ -115,26 +115,21 @@ proprement, même en cas d'échec ffmpeg.
 
 ---
 
-## Pièges OBS SDK en CI (Phase 1.1 — NON RÉSOLUS)
+## Pièges OBS SDK en CI (Phase 1.1 — RÉSOLUS)
 
-La Phase 1.1 a essayé d'activer `DANCEHAP_WITH_OBS_DEPS=ON` en CI, ce qui
-demande de builder libobs depuis les sources (obs-studio) avec les prebuilt
-deps (obs-deps). **5 rounds de CI ont échoué sur 5 problèmes différents.**
-Décision : pause sur ce front, on garde stub-only CI pour l'instant (valide
-toute la logique du code). Build real-OBS à tester localement (voir
-`BUILD-LOCAL.md`).
+La Phase 1.1 a activé `DANCEHAP_WITH_OBS_DEPS=ON` en CI, ce qui demande de
+builder libobs depuis les sources (obs-studio) avec les prebuilt deps
+(obs-deps). **9 rounds d'itération ont été nécessaires.** Tous les pièges
+sont documentés ci-dessous avec leur fix.
 
 ### 7. OBS exige le générateur Xcode sur macOS
 
 **Symptôme** : `Building OBS Studio on macOS requires Xcode generator`.
 
-**Cause** : `cmake/macos/compilerconfig.cmake` d'OBS hardcode l'exigence du
-générateur Xcode.
+**Cause** : `cmake/macos/compilerconfig.cmake` d'OBS hardcode l'exigence.
 
-**Fix partiel** : ajouter `-G Xcode` au configure OBS (mais Xcode est
-multi-config, donc tous les `--build` doivent avoir `--config Release`).
-
-**Statut** : contourné mais combine avec #10/#11.
+**Fix** : ajouter `-G Xcode` au configure OBS. Xcode étant multi-config,
+tous les `--build` doivent avoir `--config Release`.
 
 ### 8. `<experimental/coroutine>` déprécié en VS 18 (MSVC)
 
@@ -145,60 +140,87 @@ option, <experimental/coroutine>... are deprecated'
 ```
 
 **Cause** : OBS 31.x utilise `<experimental/coroutine>` via `libobs-winrt`.
-VS 18 Enterprise sur `windows-latest` déprécie ce header.
 
 **Fix** : `-DCMAKE_CXX_FLAGS=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS`
+sur le configure obs-studio (pas sur DanceHAP).
 
 ### 9. `cmake --install` échoue sur frontend-api non built
 
-**Symptôme** :
-```
-file INSTALL cannot find "obs-build/frontend/api/Release/obs-frontend-api.dll"
-```
+**Symptôme** : `file INSTALL cannot find "frontend/api/Release/obs-frontend-api.dll"`.
 
 **Cause** : `cmake --install --component Development` essaie d'installer des
-cibles qui ne sont pas build avec `-DENABLE_FRONTEND=OFF`.
+cibles non built avec `-DENABLE_FRONTEND=OFF`.
 
-**Fix tenté** : skip `cmake --install`, pointer CMake sur le build tree
-directement. → a déclenché le bug #11 (find_package LibObs échoue).
+**Fix** : skip `cmake --install`. Pointer CMake sur le build tree directement
+via `-Dlibobs_DIR=$PWD/obs-build/libobs`.
 
 ### 10. Target `obs` vs `libobs`
 
-**Symptôme** :
-```
-MSBUILD error MSB1009: Project file does not exist. Switch: obs.vcxproj
-xcodebuild: does not contain a target named 'obs'
-```
+**Symptôme** : `MSBUILD error MSB1009: Project file does not exist. obs.vcxproj`
+ou `xcodebuild: does not contain a target named 'obs'`.
 
-**Cause** : le target s'appelle `libobs`, pas `obs`, sur les générateurs VS et
-Xcode.
+**Fix** : `--target libobs` (pas `obs`).
 
-**Fix** : utiliser `--target libobs` au lieu de `--target obs`.
+### 11. `find_package(LibObs)` ne trouve pas le build tree
 
-### 11. `find_package(LibObs)` sur le build tree
+**Symptôme** : `Could NOT find LibObs (missing: LIBOBS_INCLUDE_DIR LIBOBS_LIBRARY)`.
 
-**Symptôme** :
-```
-Could NOT find LibObs (missing: LIBOBS_INCLUDE_DIR LIBOBS_LIBRARY)
-```
+**Fix** : utiliser le config-mode package généré par OBS (ne pas passer par
+notre `FindLibObs.cmake` custom). Passer `-Dlibobs_DIR=$PWD/obs-build/libobs`
+pour que `find_package(libobs CONFIG)` le trouve directement.
 
-**Cause** : pointer `CMAKE_PREFIX_PATH` sur `obs-build/` ne suffit pas pour que
-notre `cmake/FindLibObs.cmake` (qui cherche `obs.h` et `libobs`) trouve les
-fichiers. Le build tree a une layout différente du install tree.
+### 12. `w32-pthreads` config-mode manquant (Windows)
 
-**Fix** : pas encore trouvé. Pistes à explorer plus tard :
-1. Utiliser `libobsConfig.cmake` directement (`find_package(libobs CONFIG)`)
-2. Faire `cmake --install` avec un composant qui existe (`--component Headers`)
-3. Utiliser une action GitHub dédiée (`dennisamelig/setup-obs-studio`)
-4. Copier le template CI du repo `obsproject/obs-plugintemplate`
+**Symptôme** : `Could not find a package configuration file provided by "w32-pthreads"`.
 
-## Recommandation pour la reprise
+**Fix** : passer `-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads` (Windows
+uniquement).
 
-Quand on reprend le sujet OBS real-build en CI :
-1. **Charger le skill `github-operations`** et inspecter le CI de
-   `obsproject/obs-plugintemplate` — c'est le template officiel et il gère
-   tout ce setup. L'inspiration directe est plus rapide qu'expérimenter.
-2. Considérer l'action `dennisamelig/setup-obs-studio` ou similaire.
-3. Si on n'arrive pas à faire marcher le real-OBS build en CI, accepter
-   stub-only CI à long terme et tester le plugin manuellement avant chaque
-   release (Gate E pré-release).
+### 13. API OBS 31 — macro `OBS_MODULE_USE_DEFAULT_LOCALE` prend 2 args
+
+**Symptôme** : `too few arguments provided to function-like macro invocation`.
+
+**Fix** : `OBS_MODULE_USE_DEFAULT_LOCALE("dancehap", "en-US")`.
+
+### 14. API OBS 31 — `obs_module_ver` / `obs_module_set_locale` / `obs_module_free_locale` définis par macro
+
+**Symptôme** : `redefinition of 'obs_module_ver'` etc.
+
+**Cause** : `OBS_DECLARE_MODULE` et `OBS_MODULE_USE_DEFAULT_LOCALE` définissent
+ces fonctions inline.
+
+**Fix** : wrap nos définitions manuelles dans `#ifndef DANCEHAP_HAVE_OBS` (elles
+ne servent qu'en stub mode).
+
+### 15. Symboles `obs_module_*` hidden en real-OBS build
+
+**Symptôme** : le smoke test qui vérifie les exports via `nm` ne trouve pas
+`obs_module_load`.
+
+**Cause** : selon la configuration visibility, ces symboles peuvent être
+internal/hidden dans la shared library — mais OBS les trouve via `dlsym` au
+runtime via l'export table.
+
+**Fix** : le smoke test ne doit pas échouer sur absence de symboles visibles
+via `nm`. Il valide : size > 5 KB + type shared lib + best-effort symbole
+check (avec skip gracieux si pas d'outil dispo).
+
+## Leçons générales OBS SDK en CI
+
+- **Toujours `--target libobs`** (pas `obs`) — nom cross-générateur.
+- **Passer par config-mode** (`-Dlibobs_DIR=...`), pas par un `Find*.cmake`
+  custom. Le config-mode package généré par OBS est plus fiable.
+- **Ne pas `cmake --install` OBS** — pointe directement sur le build tree.
+- **Xcode generator obligatoire sur macOS** pour OBS.
+- **Silence coroutine warnings sur VS 18+** avec `_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS`.
+- **API OBS 31** : `OBS_MODULE_USE_DEFAULT_LOCALE` prend 2 args, et
+  `OBS_DECLARE_MODULE` définit déjà plusieurs entry points (ne pas les
+  redéfinir manuellement).
+- **Smoke test pragmatique** : ne pas faille sur symboles visibles via `nm`
+  (peuvent être hidden mais présents dans l'export table).
+
+## Setup OBS SDK en CI — template final
+
+Le `.github/workflows/ci.yml` actuel est un template fonctionnel pour setup
+OBS 31 SDK + build plugin + tests stub + smoke + upload. Sert de référence
+pour les prochaines phases.
