@@ -48,12 +48,22 @@ if(DANCEHAP_WITH_OBS_DEPS)
 endif()
 
 # --- Plugin object library (shared between MODULE and unit tests) -------
-# We compile plugin.cpp once into an OBJECT library so both the MODULE
-# target (the actual OBS plugin .dll/.so) and the unit-test executable
-# can consume it without duplicate compilation.
-add_library(dancehap_objs OBJECT
+# We compile plugin + hap_clip_source once into an OBJECT library so both
+# the MODULE target (the actual OBS plugin .dll/.so) and the unit-test
+# executable can consume it without duplicate compilation.
+#
+# When DANCEHAP_WITH_OBS_DEPS is OFF, we also compile obs_stub.cpp which
+# provides functional stub implementations of the OBS API so the code
+# compiles and tests run without a libobs installation.
+set(DANCEHAP_SOURCES
     src/plugin.cpp
+    src/hap_clip_source.cpp
 )
+if(NOT DANCEHAP_WITH_OBS_DEPS)
+    list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)
+endif()
+
+add_library(dancehap_objs OBJECT ${DANCEHAP_SOURCES})
 
 target_include_directories(dancehap_objs PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -118,7 +128,7 @@ endif()
 
 # --- Status summary -----------------------------------------------------
 message(STATUS "=========================================================")
-message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.0 skeleton")
+message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.1 hap_clip_source")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Platform     : ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
 message(STATUS "  OBS deps     : ${DANCEHAP_WITH_OBS_DEPS}")
