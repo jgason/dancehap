@@ -80,6 +80,7 @@ Projet en cadrage. Tant que la Phase 1 n'est pas livrée, les contributions
 externes sont en attente. Voir [`CONTRIBUTING.md`](CONTRIBUTING.md) pour les
 review gates en vigueur.
 
-## 🙋 Auteur
+## 👥 Auteur
 
-Don't Blink — [github.com/dont-Blink](https://github.com/dont-Blink)
+Jean-Luc Gason — [github.com/jgason](https://github.com/jgason/dancehap)
+projet Don't Blink. Transfert vers une orga dédiée prévu (cf. [ADR-006](docs/adr/ADR-006-repo-dont-blink.md)).

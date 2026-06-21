@@ -1,13 +1,14 @@
-# ADR-006 — Repo `dont-Blink/dancehap`
+# ADR-006 — Hébergement GitHub DanceHAP
 
 Date : 2026-06-21
-Statut : Accepté
+Statut : Accepté (révisé — voir « Révision 2026-06-21 » ci-dessous)
 
 ## Contexte
 
 Jean-Luc dirige deux entités principales :
-- **Don't Blink** (GitHub orga `dont-Blink`) : projets créatifs, LED, Alfred,
-  expérimentaux. Compte GitHub `jgason` avec accès admin org.
+- **Don't Blink** : projets créatifs, LED, Alfred, expérimentaux. Anciennement
+  hébergés sous le compte GitHub `dont-Blink` (au nom de « Madison Rosen »),
+  compte auquel le compte `jgason` de Jean-Luc n'a **pas accès en écriture**.
 - **Drop The Spoon** (pas de GitHub orga dédiée à date) : entité business
   cherchant revenus récurrents.
 
@@ -16,7 +17,7 @@ produit commercial. Il s'inscrit dans l'écosystème créatif Don't Blink.
 
 Le nom de code « DanceHAP » a été choisi pour sa clarté (danse + codec HAP).
 
-## Décision
+## Décision initiale (superseded)
 
 Repo GitHub : **`dont-Blink/dancehap`** (public).
 
@@ -26,6 +27,28 @@ Repo GitHub : **`dont-Blink/dancehap`** (public).
 - Default branch : `main`
 - Admins : `jgason` (Jean-Luc)
 - Alfred a accès via le token `jgason` (scopes repo + admin:org)
+
+## Révision 2026-06-21 — hébergement temporaire sous `jgason`
+
+Le compte `dont-Blink` est un **user account** GitHub (pas une orga) au nom de
+« Madison Rosen », sur lequel `jgason` n'a aucun droit de création. Aucune orga
+`dont-Blink` / `dont-blink` n'existe actuellement.
+
+**Décision révisée** : DanceHAP est hébergé temporairement sous
+**`jgason/dancehap`** (public), avec intention explicite de transfert vers une
+orga Don't Blink dédiée dès que :
+
+1. Jean-Luc reprend la main sur le compte `dont-Blink` (reset password), ou
+2. Une nouvelle orga GitHub `dont-blink` (ou similaire) est créée.
+
+Le transfert via `gh repo transfer` est trivial (zero-downtime, preserve stars,
+issues, PRs, et l'URL GitHub redirige automatiquement).
+
+- Repo actuel : `jgason/dancehap`
+- Visibilité : public (MIT, ADR-005)
+- Default branch : `main`
+- Admin : `jgason` (Jean-Luc)
+- Alfred a accès via le token `jgason` (scopes repo)
 
 ## Conséquences
 

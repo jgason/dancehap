@@ -15,7 +15,7 @@ qui supersede l'ancien (avec un lien dans l'ancien).
 | [ADR-003](ADR-003-modele-matting.md) | Modèle de matting : RVM + fallback MediaPipe | Accepté |
 | [ADR-004](ADR-004-stream-deck.md) | Stream Deck : hotkeys OBS au MVP, plugin Elgato Phase 5 | Accepté |
 | [ADR-005](ADR-005-licence-mit.md) | Licence open source MIT | Accepté |
-| [ADR-006](ADR-006-repo-dont-blink.md) | Repo `dont-Blink/dancehap` | Accepté |
+| [ADR-006](ADR-006-repo-dont-blink.md) | Hébergement GitHub : `jgason/dancehap` (transfert prévu) | Accepté (révisé) |
 
 ## Format d'un ADR
 
