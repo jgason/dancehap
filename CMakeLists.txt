@@ -91,6 +91,40 @@ if(DANCEHAP_WITH_OBS_DEPS)
     endif()
 endif()
 
+# --- Snappy dependency (optional, for real HapDecoder) --------------------
+# When DANCEHAP_WITH_OBS_DEPS is ON, we need Snappy to decompress HAP frames.
+# Try system Snappy first (pkg-config), then FetchContent from GitHub (BSD-3,
+# compatible with our MIT licence per ADR-005).
+# When OFF (default for local dev + tests) the decoder compiles in "stub"
+# mode — header parsing only, no decompression.
+set(DANCEHAP_HAVE_SNAPPY 0)
+if(DANCEHAP_WITH_OBS_DEPS)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(DH_SNAPPY QUIET IMPORTED_TARGET snappy)
+    endif()
+    if(TARGET PkgConfig::DH_SNAPPY)
+        set(DANCEHAP_HAVE_SNAPPY 1)
+        set(DANCEHAP_SNAPPY_LIB PkgConfig::DH_SNAPPY)
+        message(STATUS "Snappy: found via pkg-config")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            snappy
+            GIT_REPOSITORY https://github.com/google/snappy.git
+            GIT_TAG        1.2.1
+            GIT_SHALLOW    TRUE
+        )
+        # Snappy builds a static lib by default; suppress tests/examples.
+        set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(snappy)
+        set(DANCEHAP_HAVE_SNAPPY 1)
+        set(DANCEHAP_SNAPPY_LIB snappy)
+        message(STATUS "Snappy: fetched via FetchContent (1.2.1)")
+    endif()
+endif()
+
 # --- Plugin object library (shared between MODULE and unit tests) -------
 # We compile plugin + hap_clip_source once into an OBJECT library so both
 # the MODULE target (the actual OBS plugin .dll/.so) and the unit-test
@@ -103,6 +137,7 @@ set(DANCEHAP_SOURCES
     src/plugin.cpp
     src/hap_clip_source.cpp
     src/hap_demuxer.cpp
+    src/hap_decoder.cpp
 )
 if(NOT DANCEHAP_WITH_OBS_DEPS)
     list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)
@@ -131,6 +166,14 @@ if(DANCEHAP_HAVE_FFMPEG)
     target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_FFMPEG_LIBS})
 endif()
 
+# Snappy linking for real decoder (only when WITH_OBS_DEPS + Snappy found).
+# OBJECT libraries do NOT propagate transitive link deps — must link on
+# both dancehap_objs and the MODULE target (same lesson as FFmpeg).
+if(DANCEHAP_HAVE_SNAPPY)
+    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_SNAPPY=1)
+    target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_SNAPPY_LIB})
+endif()
+
 # --- Plugin target ------------------------------------------------------
 add_library(dancehap MODULE $<TARGET_OBJECTS:dancehap_objs>)
 
@@ -151,6 +194,12 @@ endif()
 if(DANCEHAP_HAVE_FFMPEG)
     target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_FFMPEG=1)
     target_link_libraries(dancehap PRIVATE ${DANCEHAP_FFMPEG_LIBS})
+endif()
+
+# Snappy libs must also be linked into the MODULE.
+if(DANCEHAP_HAVE_SNAPPY)
+    target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_SNAPPY=1)
+    target_link_libraries(dancehap PRIVATE ${DANCEHAP_SNAPPY_LIB})
 endif()
 
 # OBS plugins use no "lib" prefix and a platform-specific extension.
@@ -189,10 +238,11 @@ endif()
 
 # --- Status summary -----------------------------------------------------
 message(STATUS "=========================================================")
-message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.2 hap demuxer")
+message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.3 hap decoder")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Platform     : ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
 message(STATUS "  OBS deps     : ${DANCEHAP_WITH_OBS_DEPS}")
 message(STATUS "  FFmpeg       : ${DANCEHAP_HAVE_FFMPEG}")
+message(STATUS "  Snappy       : ${DANCEHAP_HAVE_SNAPPY}")
 message(STATUS "  Tests        : ${DANCEHAP_BUILD_TESTS}")
 message(STATUS "=========================================================")

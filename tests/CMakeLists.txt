@@ -26,6 +26,7 @@ add_executable(dancehap_unit_tests
     unit/test_skeleton.cpp
     unit/test_hap_clip_source.cpp
     unit/test_hap_demuxer.cpp
+    unit/test_hap_decoder.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
