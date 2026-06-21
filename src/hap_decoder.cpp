@@ -167,6 +167,8 @@ HapFrameInfo parse_hap_frame(const uint8_t *data, size_t size)
 #include <graphics/graphics.h>
 #endif
 
+namespace dancehap {
+
 // Map HapTextureFormat to OBS gs_color_format.
 #ifdef DANCEHAP_HAVE_OBS
 static gs_color_format map_to_gs_format(HapTextureFormat fmt)
