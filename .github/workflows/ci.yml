@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
+#
+# DanceHAP CI — build matrix Windows + macOS (ADR-001).
+# Phase 1.0 skeleton: configure, build plugin MODULE, run GoogleTest.
+#
+# Inspiration: obsproject/obs-plugintemplate CI workflow.
+# Per ADR-001, Linux is a non-goal and is NOT in the matrix.
+
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            # Let CMake auto-detect the generator (Visual Studio 17 2022 on
+            # current runners; version may change). Pinning the generator
+            # caused 'could not find any instance of Visual Studio' failures.
+            cmake_generator: ""
+            artifact_ext: dll
+          - os: macos-latest
+            cmake_generator: ""
+            artifact_ext: so
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # --- Checkout -----------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Note: sample_hapa_5s.mov is committed to the repo (~656 KB) rather
+      # than regenerated in CI. The brew/choco ffmpeg builds on GitHub
+      # runners lack the HAP encoder, and ffmpeg is no longer preinstalled.
+      # See tests/assets/README.md for the full rationale.
+
+      # --- Configure CMake ---------------------------------------------
+      - name: Configure CMake
+        run: cmake -B build -S . ${{ matrix.cmake_generator }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DDANCEHAP_BUILD_TESTS=ON
+
+      # --- Build --------------------------------------------------------
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      # --- Run tests ----------------------------------------------------
+      - name: Run unit tests
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
+
+      # --- Upload plugin artifact --------------------------------------
+      # On Windows (Visual Studio multi-config), the DLL lands in
+      # build/Release/dancehap.dll; on macOS (Make single-config), it's
+      # build/dancehap.so. Use a wildcard to cover both layouts without
+      # duplicating per-OS steps.
+      - name: Locate built plugin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $plugin = Get-ChildItem -Path build -Recurse -Filter 'dancehap.dll' | Select-Object -First 1
+          if (-not $plugin) { throw "dancehap.dll not found under build/" }
+          New-Item -ItemType Directory -Force -Path build\artifact | Out-Null
+          Copy-Item $plugin.FullName -Destination build\artifact\dancehap.dll
+          Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
+
+      - name: Locate built plugin (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/artifact
+          cp "$(find build -name 'dancehap.so' -type f | head -1)" build/artifact/dancehap.so
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dancehap-plugin-${{ matrix.os }}
+          path: build/artifact/dancehap.${{ matrix.artifact_ext }}
+          if-no-files-found: error
+          retention-days: 14

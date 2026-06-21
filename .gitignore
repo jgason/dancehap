@@ -46,6 +46,11 @@ ui_*.h
 /models/*.onnx
 /models/*.bin
 
+# Generated test assets (see tests/assets/README.md for the exception policy)
+tests/assets/*.mp4
+# Note: tests/assets/*.mov IS committed (small, deterministic, avoids CI ffmpeg
+# encoder dependency). Only exclude .mp4 and other future formats.
+
 # Secrets / local config
 .env
 .env.local
