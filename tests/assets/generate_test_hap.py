@@ -33,6 +33,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Force UTF-8 stdout/stderr — Windows runners default to cp1252 and crash on
+# any non-ASCII print (e.g. arrow, accented letters). Idempotent on Py3.7+.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 try:
     import numpy as np
 except ImportError:
@@ -118,7 +126,14 @@ def encode_hapa(
     duration: float,
     output: Path,
 ) -> None:
-    """Pipe raw RGBA frames to ffmpeg, producing a HAPA .mov with audio."""
+    """Encode raw RGBA frames to HAPA .mov with sine-wave audio.
+
+    Buffers all frames in memory (small at default 256x256x5s = ~39 MB) and
+    uses subprocess.run(input=...) so ffmpeg's stderr is always captured,
+    even if ffmpeg dies early (e.g. HAP encoder missing, bad args). The
+    previous streaming-pipe approach masked ffmpeg's error message behind a
+    BrokenPipeError on the write side.
+    """
     ffmpeg = find_ffmpeg()
     n_frames = int(fps * duration)
 
@@ -151,21 +166,24 @@ def encode_hapa(
         str(output),
     ]
 
-    proc = subprocess.Popen(
+    # Buffer frames then send in one shot — lets ffmpeg's stderr surface on
+    # failure instead of breaking the pipe on our side.
+    frames_bytes = b"".join(frame.tobytes() for frame in frames_iter)
+
+    result = subprocess.run(
         cmd,
-        stdin=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        input=frames_bytes,
+        capture_output=True,
+        timeout=60,
     )
 
-    assert proc.stdin is not None
-    for frame in frames_iter:
-        proc.stdin.write(frame.tobytes())
-    proc.stdin.close()
-    proc.wait(timeout=60)
-
-    if proc.returncode != 0:
-        stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-        sys.exit(f"ERROR: ffmpeg failed (exit {proc.returncode}):\n{stderr}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")
+        sys.exit(
+            f"ERROR: ffmpeg failed (exit {result.returncode}):\n{stderr}\n"
+            f"Hint: ensure ffmpeg was built with the HAP encoder "
+            f"(check 'ffmpeg -encoders | grep hap')."
+        )
 
 
 # ---------------------------------------------------------------------------
