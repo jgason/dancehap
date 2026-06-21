@@ -88,10 +88,10 @@ jobs:
             "-DCMAKE_PREFIX_PATH=${{ github.workspace }}\obs-deps" `
             "-DCMAKE_CXX_FLAGS=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
 
-          # Build libobs (and its deps). Skip `cmake --install` — it fails on
-          # the un-built frontend-api target. Point CMake at the build tree
-          # directly instead.
-          cmake --build obs-build --target obs --config Release --parallel
+          # Build libobs target. Note: the target name depends on the generator
+          # — `libobs` for VS and Xcode (project-file based), `obs` only for
+          # some single-config generators. `libobs` works everywhere.
+          cmake --build obs-build --target libobs --config Release --parallel
 
       - name: Setup OBS SDK (macOS)
         if: runner.os == 'macOS'
@@ -120,8 +120,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
-          # Build libobs only (skip install — DanceHAP points at build tree).
-          cmake --build obs-build --target obs --config Release --parallel
+          # Build libobs target (Xcode exposes it as `libobs`, not `obs`).
+          cmake --build obs-build --target libobs --config Release --parallel
 
       # ==================================================================
       # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
