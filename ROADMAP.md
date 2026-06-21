@@ -29,13 +29,14 @@ au-delà de la property view OBS standard.
 - [x] Skeleton CMake + build Windows + macOS (Phase 1.0, PR #1)
 - [x] Wrapper source OBS `hap_clip_source` enregistré (Phase 1.1, PR #2)
 - [x] Property view OBS : chemin du fichier, toggle loop, toggle autoplay (Phase 1.1)
-- [x] Tests unitaires GoogleTest (62 tests, stub mode) (Phase 1.0–1.3)
+- [x] Tests unitaires GoogleTest (86 tests, stub mode) (Phase 1.0–1.4)
 - [x] CI GitHub Actions matrix Win+macOS avec real-OBS build (Phase 1.1)
 - [x] Demux container (FFmpeg/libav) → extraction flux HAP + audio (Phase 1.2, PR #3)
 - [x] Décode HAP : Snappy decompress → upload texture DXT1/DXT5 (Phase 1.3, PR #4)
-- [ ] Routing audio OBS natif (infra en place Phase 1.4, décodage AAC = Phase 1.5+)
-- [x] États : idle / loading / playing / looping / ended (Phase 1.4 ClipPlayer, PR #5)
-- [ ] Smoke test OBS Windows (SMOKE-1.4.md rédigé, à exécuter post-merge)
+- [x] Boucle de rendu + synchro A/V (audio master clock, ADR-007) (Phase 1.4, PR #5)
+- [x] États : idle / loading / playing / looping / ended (Phase 1.4)
+- [ ] Routing audio OBS natif (décodage AAC → PCM, Phase 1.5+)
+- [ ] Smoke test OBS Windows + macOS (manuel Jean-Luc)
 
 **Critère de sortie** : on peut ajouter une source « DanceHAP Clip » dans OBS,
 pointer vers un .mov HAP, et voir la vidéo + entendre l'audio en synchro.
