@@ -75,21 +75,23 @@ jobs:
           Invoke-WebRequest -Uri $obsUrl -OutFile obs-src.zip
           7z x obs-src.zip -o"${{ github.workspace }}" -y
 
-          # Configure obs-studio (minimal: just libobs, no plugins/UI/scripting)
+          # Configure obs-studio (minimal: just libobs).
+          # VS 18's MSVC deprecates <experimental/coroutine>; OBS 31.x still
+          # uses it via libobs-winrt. Silence the deprecation assertion so the
+          # build succeeds.
           cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" `
             -DCMAKE_BUILD_TYPE=Release `
             -DENABLE_PLUGINS=OFF `
             -DENABLE_FRONTEND=OFF `
             -DENABLE_UI=OFF `
             -DCMAKE_ENABLE_SCRIPTING=OFF `
-            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}\obs-deps"
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}\obs-deps" `
+            "-DCMAKE_CXX_FLAGS=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
 
-          # Build ALL targets (not just 'obs') so dependencies like w32-pthreads
-          # are produced — required by `cmake --install` afterwards.
-          cmake --build obs-build --config Release --parallel
-
-          # Install development files (headers + import library + CMake config)
-          cmake --install obs-build --component Development --config Release --prefix "${{ github.workspace }}\obs-sdk"
+          # Build libobs (and its deps). Skip `cmake --install` — it fails on
+          # the un-built frontend-api target. Point CMake at the build tree
+          # directly instead.
+          cmake --build obs-build --target obs --config Release --parallel
 
       - name: Setup OBS SDK (macOS)
         if: runner.os == 'macOS'
@@ -109,8 +111,7 @@ jobs:
 
           # Configure obs-studio (minimal).
           # OBS's cmake/macos/compilerconfig.cmake REQUIRES the Xcode generator
-          # on macOS (errors out otherwise). Xcode is multi-config, so we pass
-          # --config Release to every build/install step.
+          # on macOS. Xcode is multi-config — --config Release everywhere.
           cmake -B obs-build -S "obs-studio-${{ env.OBS_VERSION }}" -G Xcode \
             -DENABLE_PLUGINS=OFF \
             -DENABLE_FRONTEND=OFF \
@@ -119,11 +120,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
-          # Build ALL targets (multi-config: --config Release required)
-          cmake --build obs-build --config Release --parallel
-
-          # Install development files
-          cmake --install obs-build --component Development --config Release --prefix "$PWD/obs-sdk"
+          # Build libobs only (skip install — DanceHAP points at build tree).
+          cmake --build obs-build --target obs --config Release --parallel
 
       # ==================================================================
       # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
@@ -132,11 +130,19 @@ jobs:
       - name: Configure plugin (with OBS deps)
         shell: bash
         run: |
+          # Point CMake at both the OBS build tree (libobsConfig.cmake lives
+          # there after `cmake --build obs-build --target obs`) and the
+          # prebuilt deps tree (jansson, ffmpeg, etc.). Semicolon-separated.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            SEP=";"
+          else
+            SEP=":"
+          fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DDANCEHAP_BUILD_TESTS=OFF \
             -DDANCEHAP_WITH_OBS_DEPS=ON \
-            -DCMAKE_PREFIX_PATH="${PWD}/obs-sdk"
+            -DCMAKE_PREFIX_PATH="${PWD}${SEP}obs-build${SEP}obs-deps"
 
       - name: Build plugin
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
