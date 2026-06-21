@@ -26,7 +26,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            cmake_generator: "-G 'Visual Studio 17 2022' -A x64"
+            # Let CMake auto-detect the generator (Visual Studio 17 2022 on
+            # current runners; version may change). Pinning the generator
+            # caused 'could not find any instance of Visual Studio' failures.
+            cmake_generator: ""
             artifact_ext: dll
           - os: macos-latest
             cmake_generator: ""
