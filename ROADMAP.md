@@ -2,7 +2,7 @@
 
 Dernière mise à jour : 2026-06-21
 
-## Phase 0 — Cadrage ✅ (en cours)
+## Phase 0 — Cadrage ✅
 
 **Objectif** : établir le cahier d'architecture, les ADRs, le repo, et valider
 le plan d'implémentation Phase 1.
@@ -13,7 +13,7 @@ le plan d'implémentation Phase 1.
 - [x] Repo `dont-Blink/dancehap` créé
 - [x] CONTRIBUTING.md (review gates)
 - [x] PLAN-PHASE-1.md rédigé
-- [ ] Gate A validé pour Phase 1 → déclencheur de code
+- [x] Gate A validé pour Phase 1 → déclencheur de code
 
 **Critère de sortie** : Jean-Luc valide le plan Phase 1, Célestin démarre le code.
 
@@ -29,9 +29,9 @@ au-delà de la property view OBS standard.
 - [x] Skeleton CMake + build Windows + macOS (Phase 1.0, PR #1)
 - [x] Wrapper source OBS `hap_clip_source` enregistré (Phase 1.1, PR #2)
 - [x] Property view OBS : chemin du fichier, toggle loop, toggle autoplay (Phase 1.1)
-- [x] Tests unitaires GoogleTest (22 tests, stub mode) (Phase 1.1)
+- [x] Tests unitaires GoogleTest (42 tests, stub mode) (Phase 1.0–1.2)
 - [x] CI GitHub Actions matrix Win+macOS avec real-OBS build (Phase 1.1)
-- [ ] Demux container (FFmpeg/libav) → extraction flux HAP + audio
+- [x] Demux container (FFmpeg/libav) → extraction flux HAP + audio (Phase 1.2, PR #3)
 - [ ] Décode HAP : Snappy decompress → upload texture DXT1/DXT5/BC7
 - [ ] Routing audio OBS natif
 - [ ] États : idle / loading / playing / looping / ended

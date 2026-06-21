@@ -25,6 +25,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(dancehap_unit_tests
     unit/test_skeleton.cpp
     unit/test_hap_clip_source.cpp
+    unit/test_hap_demuxer.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
@@ -36,6 +37,11 @@ target_link_libraries(dancehap_unit_tests PRIVATE
 target_include_directories(dancehap_unit_tests PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_BINARY_DIR}/generated"
+)
+
+# Absolute path to the test HAP asset (used by demuxer integration tests).
+target_compile_definitions(dancehap_unit_tests PRIVATE
+    DANCEHAP_TEST_ASSET="${CMAKE_SOURCE_DIR}/tests/assets/sample_hapa_5s.mov"
 )
 
 target_compile_features(dancehap_unit_tests PRIVATE cxx_std_17)
