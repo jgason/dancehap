@@ -141,6 +141,7 @@ set(DANCEHAP_SOURCES
     src/hap_clip_source.cpp
     src/hap_demuxer.cpp
     src/hap_decoder.cpp
+    src/clip_player.cpp
 )
 if(NOT DANCEHAP_WITH_OBS_DEPS)
     list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)

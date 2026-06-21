@@ -257,3 +257,84 @@ TEST_F(HapClipSourceTest, RegisterHapClipSourceCallsObsRegisterSource)
     EXPECT_STREQ(info->id, HAP_CLIP_SOURCE_ID);
     EXPECT_EQ(info->type, OBS_SOURCE_TYPE_INPUT);
 }
+
+// ===========================================================================
+// Phase 1.4: ClipPlayer integration tests
+// ===========================================================================
+
+TEST_F(HapClipSourceTest, VideoTickWithLoadedClipDoesNotCrash)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+
+    // Create with a valid clip path.
+    obs_data_t *settings = obs_data_create();
+    info->get_defaults(settings);
+    settings->strings["path"] = DANCEHAP_TEST_ASSET;
+
+    void *data = info->create(settings, nullptr);
+    ASSERT_NE(data, nullptr);
+
+    // Tick + render should work with the ClipPlayer loaded.
+    for (int i = 0; i < 30; ++i) {
+        info->video_tick(data, 0.016f);  // ~60 Hz
+    }
+    info->video_render(data, nullptr);
+
+    info->destroy(data);
+    obs_data_release(settings);
+    SUCCEED();
+}
+
+TEST_F(HapClipSourceTest, PathChangeReloadsPlayerWithoutCrash)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+
+    // Create with empty path (default).
+    obs_data_t *settings = obs_data_create();
+    info->get_defaults(settings);
+    void *data = info->create(settings, nullptr);
+    ASSERT_NE(data, nullptr);
+
+    // Tick with no clip — safe no-op.
+    info->video_tick(data, 0.016f);
+
+    // Update with a valid clip path.
+    settings->strings["path"] = DANCEHAP_TEST_ASSET;
+    info->update(data, settings);
+
+    // Now tick should exercise the ClipPlayer.
+    info->video_tick(data, 0.016f);
+    info->video_render(data, nullptr);
+
+    info->destroy(data);
+    obs_data_release(settings);
+    SUCCEED();
+}
+
+TEST_F(HapClipSourceTest, DimensionsReportedWhenClipLoaded)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+    ASSERT_NE(info->get_width, nullptr);
+    ASSERT_NE(info->get_height, nullptr);
+
+    // No clip → dimensions 0.
+    obs_data_t *settings = obs_data_create();
+    info->get_defaults(settings);
+    void *data = info->create(settings, nullptr);
+    EXPECT_EQ(info->get_width(data), 0u);
+    EXPECT_EQ(info->get_height(data), 0u);
+    info->destroy(data);
+
+    // With clip → 256x256 (stub metadata for sample_hapa_5s.mov).
+    settings->strings["path"] = DANCEHAP_TEST_ASSET;
+    data = info->create(settings, nullptr);
+    ASSERT_NE(data, nullptr);
+    EXPECT_EQ(info->get_width(data), 256u);
+    EXPECT_EQ(info->get_height(data), 256u);
+
+    info->destroy(data);
+    obs_data_release(settings);
+}
