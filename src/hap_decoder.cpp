@@ -371,6 +371,25 @@ void HapDecoder::uploadToGpu()
         return;
     }
 
+    // DIAGNOSTIC MODE: force a BGRA test pattern instead of uploading DXT5
+    // data. This lets us verify the render path independently of DXT5
+    // decoding issues. Controlled at compile time so it never leaks into
+    // production builds.
+#ifdef DANCEHAP_DEBUG_SOLID_COLOR
+    gs_fmt = GS_BGRA;
+    // Build a solid magenta opaque texture (BGRA: B=255, G=0, R=255, A=255)
+    pimpl_->decompressed.assign(
+        static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+    for (size_t i = 0; i < pimpl_->decompressed.size(); i += 4) {
+        pimpl_->decompressed[i + 0] = 0xFF;  // B
+        pimpl_->decompressed[i + 1] = 0x00;  // G
+        pimpl_->decompressed[i + 2] = 0xFF;  // R
+        pimpl_->decompressed[i + 3] = 0xFF;  // A
+    }
+    blog(LOG_WARNING, "[DanceHAP] HapDecoder: DEBUG_SOLID_COLOR active — "
+         "uploading %dx%d BGRA magenta instead of DXT5", w, h);
+#endif
+
     // First attempt: log graphics context state for diagnostics.
     if (!pimpl_->warned_about_thread) {
         pimpl_->warned_about_thread = true;

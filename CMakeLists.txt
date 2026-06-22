@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.2.3
+    VERSION 0.2.4
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )
@@ -176,6 +176,18 @@ endif()
 if(DANCEHAP_HAVE_SNAPPY)
     target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_SNAPPY=1)
     target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_SNAPPY_LIB})
+endif()
+
+# --- Debug solid-color override ---------------------------------------------
+# When ON, the decoder uploads a solid magenta BGRA texture instead of the
+# decoded DXT5 data. Used to isolate render-path bugs from decode bugs.
+# Default OFF — never enable for production builds.
+option(DANCEHAP_DEBUG_SOLID_COLOR "Replace decoded DXT5 with solid magenta BGRA for render-path testing" OFF)
+if(DANCEHAP_DEBUG_SOLID_COLOR)
+    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_DEBUG_SOLID_COLOR=1)
+    message(STATUS "=========================================================")
+    message(STATUS "DanceHAP: DEBUG_SOLID_COLOR is ON — plugin will render solid magenta")
+    message(STATUS "=========================================================")
 endif()
 
 # --- Plugin target ------------------------------------------------------

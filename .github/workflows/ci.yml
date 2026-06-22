@@ -135,6 +135,10 @@ jobs:
           EXTRA_ARGS=""
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
+            # Temporary diagnostic: build Windows DLL with solid magenta BGRA
+            # to isolate render-path bugs from DXT5 decode bugs. Remove after
+            # the smoke test confirms the render path works.
+            EXTRA_ARGS="$EXTRA_ARGS -DDANCEHAP_DEBUG_SOLID_COLOR=ON"
           fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
