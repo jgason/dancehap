@@ -38,6 +38,7 @@
 #include "dancehap/version.h"
 
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,7 @@ struct hap_clip_context {
     bool loop      = true;
     bool autoplay  = false;
     bool active    = false;
+    int  volume    = 100;  // 0..100, applied to audio output (Phase 1.5.a)
 
     // Phase 1.4: ClipPlayer owns demuxer + decoder + timing + loop logic.
     dancehap::ClipPlayer player;
@@ -75,9 +77,16 @@ struct hap_clip_context {
 
     /// Push interleaved float audio to OBS as planar float.
     /// Converts AudioOutput.samples (interleaved) → obs_source_audio (planar).
+    /// Applies the per-source volume gain (0..100 → 0.0..1.0) to each sample.
     void push_audio(const dancehap::AudioOutput &audio)
     {
         if (!source || !audio.valid || audio.frames <= 0) return;
+
+        // Volume gain: 0..100 → 0.0..1.0. Clamped in case update() saw an
+        // out-of-range value (defensive — OBS UI should enforce 0..100).
+        const float gain = (volume < 0 || volume > 100)
+            ? 1.0f
+            : static_cast<float>(volume) / 100.0f;
 
         // Planar buffers (one per channel). Allocate on each call — small
         // (frames * channels * 4 bytes, typically < 4 KB).
@@ -86,7 +95,7 @@ struct hap_clip_context {
         for (int c = 0; c < ch; ++c) {
             planar[c].resize(audio.frames);
             for (int i = 0; i < audio.frames; ++i) {
-                planar[c][i] = audio.samples[
+                planar[c][i] = gain * audio.samples[
                     static_cast<size_t>(i) * audio.channels + c];
             }
         }
@@ -160,10 +169,12 @@ void *hap_clip_create(obs_data_t *settings, obs_source_t *source)
         if (path) ctx->file_path = path;
         ctx->loop     = obs_data_get_bool(settings, "loop");
         ctx->autoplay = obs_data_get_bool(settings, "autoplay");
+        ctx->volume   = static_cast<int>(obs_data_get_int(settings, "volume"));
     }
     blog(LOG_INFO, "[DanceHAP] hap_clip_source created "
-                   "(path='%s', loop=%d, autoplay=%d)",
-         ctx->file_path.c_str(), (int)ctx->loop, (int)ctx->autoplay);
+                   "(path='%s', loop=%d, autoplay=%d, volume=%d)",
+         ctx->file_path.c_str(), (int)ctx->loop, (int)ctx->autoplay,
+         ctx->volume);
 
     // Phase 1.4: load the clip via ClipPlayer.
     ctx->load_clip();
@@ -188,6 +199,7 @@ void hap_clip_get_defaults(obs_data_t *settings)
     obs_data_set_default_string(settings, "path", "");
     obs_data_set_default_bool(settings, "loop", true);
     obs_data_set_default_bool(settings, "autoplay", false);
+    obs_data_set_default_int(settings, "volume", 100);
 }
 
 obs_properties_t *hap_clip_get_properties(void * /*data*/)
@@ -205,8 +217,18 @@ obs_properties_t *hap_clip_get_properties(void * /*data*/)
 
     obs_properties_add_bool(props, "loop", "Loop");
     obs_properties_add_bool(props, "autoplay", "Autoplay");
+    obs_properties_add_int(props, "volume", "Volume", 0, 100, 1);
 
     return props;
+}
+
+// Check if a file exists and is readable. Uses std::ifstream (portable,
+// no OBS dependency) so it works identically in stub and real modes.
+static bool hap_clip_file_exists(const std::string &path)
+{
+    if (path.empty()) return false;
+    std::ifstream f(path, std::ios::binary);
+    return f.is_open();
 }
 
 void hap_clip_update(void *data, obs_data_t *settings)
@@ -217,13 +239,32 @@ void hap_clip_update(void *data, obs_data_t *settings)
     const char *path = obs_data_get_string(settings, "path");
     bool new_loop = obs_data_get_bool(settings, "loop");
     bool new_autoplay = obs_data_get_bool(settings, "autoplay");
+    int  new_volume = static_cast<int>(obs_data_get_int(settings, "volume"));
 
     if (path && ctx->file_path != path) {
-        blog(LOG_INFO, "[DanceHAP] path changed: '%s' -> '%s'",
-             ctx->file_path.c_str(), path);
-        ctx->file_path = path;
-        ctx->loop = new_loop;
-        ctx->load_clip();  // ClipPlayer.load replaces current clip
+        // Phase 1.5.a Étape 2: validate the new path before reloading.
+        // If the file doesn't exist, log a warning and skip the reload —
+        // the source keeps playing the previous clip (or stays idle).
+        // This avoids a confusing silent failure when the user mistypes
+        // a path or picks a deleted file.
+        if (!hap_clip_file_exists(path)) {
+            blog(LOG_WARNING, "[DanceHAP] path '%s' does not exist or is "
+                 "not readable — keeping previous clip '%s'",
+                 path, ctx->file_path.c_str());
+        } else {
+            blog(LOG_INFO, "[DanceHAP] path changed: '%s' -> '%s'",
+                 ctx->file_path.c_str(), path);
+            // Phase 1.5.a Étape 3: stop the player before reloading so
+            // any in-flight decode/upload is cleanly released. load_clip
+            // recreates the demuxer + decoder via unique_ptr reset, which
+            // handles the old ones, but an explicit stop makes the
+            // transition visible in the log and guards against future
+            // refactors that might not use unique_ptr.
+            ctx->player.stop();
+            ctx->file_path = path;
+            ctx->loop = new_loop;
+            ctx->load_clip();  // ClipPlayer.load replaces current clip
+        }
     } else {
         // Loop setting may have changed — sync to player.
         if (ctx->loop != new_loop) {
@@ -232,6 +273,7 @@ void hap_clip_update(void *data, obs_data_t *settings)
         }
     }
     ctx->autoplay = new_autoplay;
+    ctx->volume = new_volume;
 }
 
 void hap_clip_activate(void *data)
