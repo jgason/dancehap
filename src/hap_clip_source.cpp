@@ -23,8 +23,15 @@
 // output_flags justification:
 //   VIDEO            — produces a video texture (HAP frames)
 //   AUDIO            — produces audio (clip's audio track)
-//   CUSTOM_DRAW      — rendering via our own gs_texture upload
 //   DO_NOT_DUPLICATE — A/V sync managed internally
+//
+// NOTE: we do NOT set OBS_SOURCE_CUSTOM_DRAW. Without that flag, OBS calls
+// obs_source_default_render() which wraps our video_render() in the proper
+// default-effect "Draw" technique begin/end (see libobs/obs-source.c).
+// With CUSTOM_DRAW set, OBS passes a NULL effect to video_render and we
+// would have to load the default effect ourselves — which produced a
+// silent transparent render in OBS 31 (gs_effect_get_technique(NULL, ...)
+// returns NULL, so no draw pass ever runs).
 
 #include "hap_clip_source.hpp"
 #include "clip_player.hpp"
@@ -307,45 +314,23 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
     if (!logged_first_draw) {
         logged_first_draw = true;
         blog(LOG_INFO, "[DanceHAP] video_render: first draw with valid "
-             "texture %dx%d fmt=%d", ctx->player.getVideoWidth(),
+             "texture %dx%d variant=%d", ctx->player.getVideoWidth(),
              ctx->player.getVideoHeight(),
              (int)ctx->player.getVideoInfo().variant);
     }
 
-    // OBS draw pattern (per obs-source.c::render_filter_tex and
-    // plugins/image-source/image_source_render): the default effect must
-    // be activated via its technique before calling gs_draw_sprite. For
-    // textures with alpha (DXT5 / HAPA), we must also push a blend state
-    // that interprets the texture's alpha channel — otherwise the source
-    // renders fully transparent (the framebuffer keeps whatever was there
-    // before, i.e. the background color shows through completely).
+    // Without OBS_SOURCE_CUSTOM_DRAW, OBS wraps our video_render() call in
+    // the default effect's "Draw" technique begin/pass/end (see
+    // libobs/obs-source.c::obs_source_default_render). We just need to
+    // bind the texture to the "image" parameter and draw.
     uint32_t w = static_cast<uint32_t>(ctx->player.getVideoWidth());
     uint32_t h = static_cast<uint32_t>(ctx->player.getVideoHeight());
 
-    gs_blend_state_push();
-    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-
-    gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
-    gs_effect_set_texture(image, tex);
-
-    gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
-    if (tech) {
-        size_t passes = gs_technique_begin(tech);
-        for (size_t i = 0; i < passes; ++i) {
-            gs_technique_begin_pass(tech, i);
-            gs_draw_sprite(tex, 0, w, h);
-            gs_technique_end_pass(tech);
-        }
-        gs_technique_end(tech);
-    } else {
-        blog(LOG_WARNING, "[DanceHAP] video_render: effect has no 'Draw' "
-             "technique, trying gs_effect_loop fallback");
-        while (gs_effect_loop(effect, "Draw")) {
-            gs_draw_sprite(tex, 0, w, h);
-        }
+    if (effect) {
+        gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+        if (image) gs_effect_set_texture(image, tex);
     }
-
-    gs_blend_state_pop();
+    gs_draw_sprite(tex, 0, w, h);
 #endif
     // Stub mode: no OBS graphics API — safe no-op.
 }
@@ -382,7 +367,6 @@ struct obs_source_info build_hap_clip_info()
     info.type         = OBS_SOURCE_TYPE_INPUT;
     info.output_flags = OBS_SOURCE_VIDEO
                       | OBS_SOURCE_AUDIO
-                      | OBS_SOURCE_CUSTOM_DRAW
                       | OBS_SOURCE_DO_NOT_DUPLICATE;
 
     info.get_name       = hap_clip_get_name;
