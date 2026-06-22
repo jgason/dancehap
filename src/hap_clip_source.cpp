@@ -23,8 +23,15 @@
 // output_flags justification:
 //   VIDEO            — produces a video texture (HAP frames)
 //   AUDIO            — produces audio (clip's audio track)
-//   CUSTOM_DRAW      — rendering via our own gs_texture upload
 //   DO_NOT_DUPLICATE — A/V sync managed internally
+//
+// NOTE: we do NOT set OBS_SOURCE_CUSTOM_DRAW. Without that flag, OBS calls
+// obs_source_default_render() which wraps our video_render() in the proper
+// default-effect "Draw" technique begin/end (see libobs/obs-source.c).
+// With CUSTOM_DRAW set, OBS passes a NULL effect to video_render and we
+// would have to load the default effect ourselves — which produced a
+// silent transparent render in OBS 31 (gs_effect_get_technique(NULL, ...)
+// returns NULL, so no draw pass ever runs).
 
 #include "hap_clip_source.hpp"
 #include "clip_player.hpp"
@@ -135,7 +142,11 @@ struct hap_clip_context {
 
 const char *hap_clip_get_name(void * /*type_data*/)
 {
-    return HAP_CLIP_SOURCE_NAME;
+    // Embed the version directly in the source name so it shows up in the
+    // OBS "Add source" menu, the scene source list, and the properties
+    // window title. This lets the operator confirm at a glance which DLL
+    // version is actually loaded — critical when iterating on smoke tests.
+    return HAP_CLIP_SOURCE_NAME " v" DANCEHAP_VERSION_STRING;
 }
 
 void *hap_clip_create(obs_data_t *settings, obs_source_t *source)
@@ -275,15 +286,51 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
     auto *ctx = static_cast<hap_clip_context *>(data);
     if (!ctx) return;
 
+    // Upload any pending decoded frame to the GPU. This MUST happen on the
+    // graphics thread (i.e. here in video_render) — gs_texture_create fails
+    // when called from video_tick on Windows OBS 31.
+    ctx->player.uploadToGpu();
+
     gs_texture_t *tex = ctx->player.getTexture();
-    if (!tex) return;  // stub mode or no decoded frame yet
+    if (!tex) {
+        // Log the first ~5 times video_render is called with no texture, so
+        // we can tell from the OBS log whether video_render is being reached.
+        static int no_tex_log_count = 0;
+        if (no_tex_log_count < 5) {
+            ++no_tex_log_count;
+            blog(LOG_WARNING, "[DanceHAP] video_render: no texture yet "
+                 "(state=%d, hasVideo=%d, frameCount=%d, lastError='%s')",
+                 (int)ctx->player.getState(),
+                 (int)ctx->player.hasVideo(),
+                 ctx->player.getFrameCount(),
+                 ctx->player.getLastError().c_str());
+        }
+        return;
+    }
 
 #ifdef DANCEHAP_HAVE_OBS
-    gs_effect_set_texture(
-        gs_effect_get_param_by_name(effect, "image"), tex);
-    gs_draw_sprite(tex, 0,
-                   ctx->player.getVideoWidth(),
-                   ctx->player.getVideoHeight());
+    // Log the first successful draw so we can confirm render path is reached.
+    static thread_local bool logged_first_draw = false;
+    if (!logged_first_draw) {
+        logged_first_draw = true;
+        blog(LOG_INFO, "[DanceHAP] video_render: first draw with valid "
+             "texture %dx%d variant=%d", ctx->player.getVideoWidth(),
+             ctx->player.getVideoHeight(),
+             (int)ctx->player.getVideoInfo().variant);
+    }
+
+    // Without OBS_SOURCE_CUSTOM_DRAW, OBS wraps our video_render() call in
+    // the default effect's "Draw" technique begin/pass/end (see
+    // libobs/obs-source.c::obs_source_default_render). We just need to
+    // bind the texture to the "image" parameter and draw.
+    uint32_t w = static_cast<uint32_t>(ctx->player.getVideoWidth());
+    uint32_t h = static_cast<uint32_t>(ctx->player.getVideoHeight());
+
+    if (effect) {
+        gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+        if (image) gs_effect_set_texture(image, tex);
+    }
+    gs_draw_sprite(tex, 0, w, h);
 #endif
     // Stub mode: no OBS graphics API — safe no-op.
 }
@@ -320,7 +367,6 @@ struct obs_source_info build_hap_clip_info()
     info.type         = OBS_SOURCE_TYPE_INPUT;
     info.output_flags = OBS_SOURCE_VIDEO
                       | OBS_SOURCE_AUDIO
-                      | OBS_SOURCE_CUSTOM_DRAW
                       | OBS_SOURCE_DO_NOT_DUPLICATE;
 
     info.get_name       = hap_clip_get_name;

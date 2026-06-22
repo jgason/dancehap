@@ -58,20 +58,37 @@ inline const char *hap_tex_format_to_string(HapTextureFormat f)
 // HAP frame header parse result.
 //
 // Exposed publicly so unit tests can verify header parsing without Snappy.
-// The HAP frame format (from https://hap.video/ and FFmpeg libavcodec/hap.c):
 //
-//   Single-chunk frame:
-//     [4B BE32: remaining]   length of rest of frame (excl. this field)
-//     [4B FourCC: Hap1/Hap5/HapY/HapA]  texture format
-//     [remaining-4 bytes]    Snappy-compressed DXT/BC data
+// HAP frame format — per Vidvox Hap Video spec
+// (https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md)
+// and mirrored by FFmpeg libavcodec/hap.c::ff_hap_parse_section_header:
 //
-//   Multi-section frame (HapM):
-//     [4B BE32: remaining]
-//     [4B FourCC: HapM]
-//     [sections...]  each section: [4B BE32 sec_remaining][4B sec FourCC][data]
-//       Section "HapS" (texture):
-//         [4B texture FourCC (Hap1/Hap5/HapY/HapA)]
-//         [compressed data...]
+//   Section header (variable length):
+//     [3 bytes LE uint24: section_size]  if non-zero → header is 4 bytes total
+//     [1 byte: section_type]             (e.g. 0xBE = RGBA DXT5 Snappy)
+//     -- OR --
+//     [3 bytes zero]                     if section_size==0 → header is 8 bytes
+//     [1 byte: section_type]
+//     [4 bytes LE uint32: real section_size]
+//
+//   Top-level section types (only the relevant ones for our MVP):
+//     0xBB  RGB  DXT1 Snappy   (Hap1)
+//     0xBE  RGBA DXT5 Snappy   (Hap5)  ← our test asset uses this
+//     0xBF  YCoCg DXT5 Snappy  (HapY)
+//     0xAE/0xAF/0xAC  …None variants
+//     0xCE/0xCF/0xCC  …Complex (decode instructions) variants
+//     0x0D  Multiple-image container (HapM)
+//
+//   After the header, section_size bytes of payload follow. For Snappy
+//   top-level types, the payload is a single Snappy stream that decompresses
+//   to the DXT/BC texture data. For 0x0D containers, payload is a sequence
+//   of nested top-level sections (one per image plane).
+//
+// IMPORTANT: the codec variant (HAP / HAPA / HAPQ / HAPQ-A) is stored in
+// the MOV container's stsd atom as a codec_tag (Hap1/Hap5/HapY/HapA/HapM),
+// NOT inside each frame. parse_hap_frame() therefore maps the section_type
+// byte to a (variant, format) pair using the spec table. A mismatch between
+// the container's codec_tag and the frame's section_type is a decode error.
 // ---------------------------------------------------------------------------
 
 struct HapFrameInfo {
@@ -115,11 +132,19 @@ public:
     /// texture dimensions (which are not stored in the HAP frame itself).
     void setVideoInfo(const VideoInfo &vi);
 
-    /// Decode a HAP packet into a GPU texture.
+    /// Decode a HAP packet (CPU-only: Snappy decompress).
+    /// Safe to call from any thread (typically the video_tick thread).
+    /// Does NOT touch the GPU — the decompressed DXT/BC data is buffered
+    /// internally and uploaded on the next uploadToGpu() call.
     /// Returns true on success.
-    /// On error: keeps the previous texture (no crash), sets last_error,
-    /// returns false.
     bool decode(const DemuxPacket &packet);
+
+    /// Upload the latest decompressed frame to the GPU as a gs_texture.
+    /// MUST be called from the OBS graphics thread (i.e. from
+    /// hap_clip_video_render). Calling it from video_tick will fail on
+    /// Windows OBS 31 because no graphics context is active there.
+    /// No-op if no frame is pending or OBS graphics are unavailable.
+    void uploadToGpu();
 
     /// Current texture handle.
     /// Real mode: valid gs_texture_t after successful decode().

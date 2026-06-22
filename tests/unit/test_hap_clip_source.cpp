@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "hap_clip_source.hpp"
 #include "obs_compat.hpp"
 #include "plugin.hpp"
@@ -67,11 +69,14 @@ TEST_F(HapClipSourceTest, OutputFlagsIncludeVideoAndAudio)
     EXPECT_TRUE(info->output_flags & OBS_SOURCE_AUDIO);
 }
 
-TEST_F(HapClipSourceTest, OutputFlagsIncludeCustomDrawAndNoDuplicate)
+TEST_F(HapClipSourceTest, OutputFlagsIncludeNoDuplicate)
 {
     const obs_source_info *info = hap_clip_source_get_info();
     ASSERT_NE(info, nullptr);
-    EXPECT_TRUE(info->output_flags & OBS_SOURCE_CUSTOM_DRAW);
+    // CUSTOM_DRAW is intentionally NOT set: we want OBS to wrap our
+    // video_render in the default-effect Draw technique. See the comment
+    // in hap_clip_source.cpp for the full rationale.
+    EXPECT_FALSE(info->output_flags & OBS_SOURCE_CUSTOM_DRAW);
     EXPECT_TRUE(info->output_flags & OBS_SOURCE_DO_NOT_DUPLICATE);
 }
 
@@ -82,7 +87,14 @@ TEST_F(HapClipSourceTest, GetNameReturnsDisplayName)
     ASSERT_NE(info->get_name, nullptr);
     const char *name = info->get_name(nullptr);
     ASSERT_NE(name, nullptr);
-    EXPECT_STREQ(name, HAP_CLIP_SOURCE_NAME);
+    // The name embeds the build version so the operator can confirm the
+    // deployed DLL at a glance in OBS. It must start with the base display
+    // name and include a version suffix "vX.Y.Z".
+    std::string s(name);
+    EXPECT_NE(s.find(HAP_CLIP_SOURCE_NAME), std::string::npos)
+        << "name='" << s << "' missing base name '" << HAP_CLIP_SOURCE_NAME << "'";
+    EXPECT_NE(s.find("v"), std::string::npos)
+        << "name='" << s << "' missing version suffix";
 }
 
 // ===========================================================================

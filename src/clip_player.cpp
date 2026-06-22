@@ -343,6 +343,11 @@ gs_texture_t *ClipPlayer::getTexture() const
     return pimpl_->decoder ? pimpl_->decoder->getTexture() : nullptr;
 }
 
+void ClipPlayer::uploadToGpu()
+{
+    if (pimpl_->decoder) pimpl_->decoder->uploadToGpu();
+}
+
 int ClipPlayer::getVideoWidth() const
 {
     return pimpl_->decoder ? pimpl_->decoder->getWidth() : 0;

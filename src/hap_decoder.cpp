@@ -20,38 +20,53 @@
 
 // ===========================================================================
 //  Shared header parsing (works in both modes — pure byte inspection)
+//
+//  Implements the Vidvox HAP "section header" format, matching FFmpeg's
+//  libavcodec/hap.c::ff_hap_parse_section_header.
+//
+//  Layout:
+//    bytes 0-2 (LE uint24): section_size
+//    byte  3:               section_type
+//    if section_size == 0:
+//        bytes 4-7 (LE uint32): real section_size  (extended header)
+//
+//  Top-level section type byte values we recognise (see HAP spec table):
+//    0xBB HAP   RGB DXT1 Snappy    (codec_tag "Hap1")
+//    0xBE HAPA  RGBA DXT5 Snappy   (codec_tag "Hap5")
+//    0xBF HAPQ  YCoCg DXT5 Snappy  (codec_tag "HapY")
+//    0xAE/0xAF  same formats with "None" compressor (not Snappy)
+//    0x0D       HapM multi-image container (HapQ-A = YCoCg + Alpha)
+//
+//  Compressor codes (high nibble of section_type):
+//    0xA0  None
+//    0xB0  Snappy
+//    0xC0  Complex (decode-instructions)
+//
+//  Pixel format codes (low nibble of section_type):
+//    0x0B  RGB DXT1     (Hap1)
+//    0x0E  RGBA DXT5    (Hap5)
+//    0x0F  YCoCg DXT5   (HapY)
+//    0x0C  RGBA BC7     (Hap7)
+//    0x01  Alpha RGTC1  (HapA)
 // ===========================================================================
 
 namespace dancehap {
 
-// Build a 32-bit FourCC tag in little-endian byte order (matches FFmpeg MKTAG).
-static constexpr uint32_t mk_tag(char a, char b, char c, char d)
+// HAP section type byte values (Vidvox Hap Video spec — Top-Level Sections table).
+static constexpr uint8_t HAP_TYPE_HAP_DXT1_SNAPPY   = 0xBB;  // Hap1
+static constexpr uint8_t HAP_TYPE_HAPA_DXT5_SNAPPY  = 0xBE;  // Hap5
+static constexpr uint8_t HAP_TYPE_HAPQ_DXT5_SNAPPY  = 0xBF;  // HapY
+static constexpr uint8_t HAP_TYPE_MULTI_IMAGE       = 0x0D;  // HapM container
+
+// Read little-endian uint24 (3 bytes).
+static uint32_t read_le24(const uint8_t *p)
 {
-    return (uint32_t)(uint8_t)(a)
-         | ((uint32_t)(uint8_t)(b) << 8)
-         | ((uint32_t)(uint8_t)(c) << 16)
-         | ((uint32_t)(uint8_t)(d) << 24);
+    return  (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16);
 }
 
-// HAP chunk FourCCs as stored in frame data (read as le32 on little-endian).
-static constexpr uint32_t HAP_FCC_HAP1 = mk_tag('H', 'a', 'p', '1'); // HAP  DXT1
-static constexpr uint32_t HAP_FCC_HAP5 = mk_tag('H', 'a', 'p', '5'); // HAPA DXT5
-static constexpr uint32_t HAP_FCC_HAPY = mk_tag('H', 'a', 'p', 'Y'); // HAPQ DXT5-YCoCg
-static constexpr uint32_t HAP_FCC_HAPA = mk_tag('H', 'a', 'p', 'A'); // HAPQ-A
-static constexpr uint32_t HAP_FCC_HAPM = mk_tag('H', 'a', 'p', 'M'); // Multi-section container
-static constexpr uint32_t HAP_FCC_HAPS = mk_tag('H', 'a', 'p', 'S'); // Texture section (in HapM)
-static constexpr uint32_t HAP_FCC_HAPC = mk_tag('H', 'a', 'p', 'C'); // Compressor section
-
-// Read big-endian uint32 (HAP stores sizes in big-endian per the spec).
-static uint32_t read_be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24)
-         | ((uint32_t)p[1] << 16)
-         | ((uint32_t)p[2] << 8)
-         |  (uint32_t)p[3];
-}
-
-// Read little-endian uint32 (HAP FourCCs read as le32 on little-endian host).
+// Read little-endian uint32 (4 bytes).
 static uint32_t read_le32(const uint8_t *p)
 {
     return  (uint32_t)p[0]
@@ -60,97 +75,121 @@ static uint32_t read_le32(const uint8_t *p)
          | ((uint32_t)p[3] << 24);
 }
 
-// Map a HAP chunk FourCC to a HapVariant.
-static HapVariant fourcc_to_variant(uint32_t fcc)
+// Parse a HAP section header at `data`. On success, fills `section_size`
+// (payload size in bytes, excluding header) and `section_type`, and returns
+// the number of header bytes consumed (4 or 8). Returns 0 on error.
+static size_t parse_section_header(const uint8_t *data, size_t size,
+                                   uint32_t &section_size, uint8_t &section_type)
 {
-    switch (fcc) {
-    case HAP_FCC_HAP1: return HapVariant::HAP;
-    case HAP_FCC_HAP5: return HapVariant::HAPA;
-    case HAP_FCC_HAPY: return HapVariant::HAPQ;
-    case HAP_FCC_HAPA: return HapVariant::HAPQ_A;
-    default:           return HapVariant::Unknown;
+    if (!data || size < 4) return 0;
+
+    uint32_t sz = read_le24(data);
+    uint8_t  ty = data[3];
+
+    size_t header_len = 4;
+    if (sz == 0) {
+        // Extended 8-byte header: real size is in bytes 4-7 (LE uint32).
+        if (size < 8) return 0;
+        sz = read_le32(data + 4);
+        header_len = 8;
+    }
+
+    section_size = sz;
+    section_type = ty;
+    return header_len;
+}
+
+// Map a HAP section_type byte (top-level Snappy variant) to a
+// (HapVariant, HapTextureFormat) pair. Returns false if the type is not a
+// recognised single-image top-level Snappy section.
+static bool section_type_to_variant_format(uint8_t section_type,
+                                           HapVariant &variant,
+                                           HapTextureFormat &format)
+{
+    switch (section_type) {
+    case HAP_TYPE_HAP_DXT1_SNAPPY:    // 0xBB
+        variant = HapVariant::HAP;
+        format  = HapTextureFormat::DXT1;
+        return true;
+    case HAP_TYPE_HAPA_DXT5_SNAPPY:   // 0xBE
+        variant = HapVariant::HAPA;
+        format  = HapTextureFormat::DXT5;
+        return true;
+    case HAP_TYPE_HAPQ_DXT5_SNAPPY:   // 0xBF
+        variant = HapVariant::HAPQ;
+        format  = HapTextureFormat::BC7;   // OBS 31 lacks BC7 → fallback DXT5 at upload
+        return true;
+    default:
+        return false;
     }
 }
 
-// Map a HapVariant to the GPU texture format.
-// Per ARCHITECTURE.md §6 and PLAN-PHASE-1.md 1.3:
-//   HAP  → DXT1, HAPA → DXT5, HAPQ/HAPQ-A → BC7
-static HapTextureFormat variant_to_tex_format(HapVariant v)
-{
-    switch (v) {
-    case HapVariant::HAP:    return HapTextureFormat::DXT1;
-    case HapVariant::HAPA:   return HapTextureFormat::DXT5;
-    case HapVariant::HAPQ:   return HapTextureFormat::BC7;
-    case HapVariant::HAPQ_A: return HapTextureFormat::BC7;
-    default:                 return HapTextureFormat::Unknown;
-    }
-}
-
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------+
 // parse_hap_frame — public free function
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------+
 
 HapFrameInfo parse_hap_frame(const uint8_t *data, size_t size)
 {
     HapFrameInfo info;
 
-    if (!data || size < 8) return info;  // need at least length + FourCC
+    if (!data || size < 4) return info;  // need at least the 4-byte header
 
-    uint32_t frame_remaining = read_be32(data);     // bytes 0-3 (big-endian)
-    uint32_t frame_fcc       = read_le32(data + 4);  // bytes 4-7 (FourCC)
+    uint32_t section_size = 0;
+    uint8_t  section_type = 0;
+    size_t   header_len   = parse_section_header(data, size,
+                                                 section_size, section_type);
+    if (header_len == 0) return info;
 
-    // Total meaningful data = 4 (length field) + frame_remaining.
-    // Clamp to the actual buffer size to stay safe with truncated data.
-    size_t frame_end = std::min(static_cast<size_t>(4u) + frame_remaining, size);
+    // Clamp section_size to the bytes actually available after the header.
+    size_t avail = (size > header_len) ? (size - header_len) : 0;
+    size_t payload_size = std::min(static_cast<size_t>(section_size), avail);
 
-    if (frame_fcc == HAP_FCC_HAPM) {
-        // --- Multi-section container ---
-        // Iterate sub-sections looking for "HapS" (texture section).
-        size_t offset = 8;  // skip length field + "HapM" FourCC
-        while (offset + 8 <= frame_end) {
-            uint32_t sec_remaining = read_be32(data + offset);
-            uint32_t sec_fcc       = read_le32(data + offset + 4);
+    // HapM multi-image container: type 0x0D.
+    // Per spec, the container holds 2 nested top-level sections (YCoCg DXT5 +
+    // Alpha RGTC1). For MVP we decode only the first (colour) plane; the
+    // alpha plane is Phase 5 polish. We still report variant=HAPQ_A to match
+    // the container codec_tag.
+    if (section_type == HAP_TYPE_MULTI_IMAGE) {
+        // Iterate nested sections, pick the first we recognise.
+        size_t offset = header_len;
+        size_t end    = header_len + payload_size;
+        while (offset + 4 <= end) {
+            uint32_t sub_size = 0;
+            uint8_t  sub_type = 0;
+            size_t   sub_hlen = parse_section_header(data + offset, end - offset,
+                                                     sub_size, sub_type);
+            if (sub_hlen == 0) break;
 
-            // Section spans [offset, offset + 4 + sec_remaining)
-            // (4 bytes for the length field, sec_remaining for the rest).
-            size_t sec_end = offset + 4u + sec_remaining;
-            if (sec_end > frame_end) sec_end = frame_end;
-
-            if (sec_fcc == HAP_FCC_HAPS && offset + 12 <= sec_end) {
-                // Texture section: [4B tex FourCC] [compressed data...]
-                uint32_t tex_fcc = read_le32(data + offset + 8);
-                info.variant = fourcc_to_variant(tex_fcc);
-                if (info.variant != HapVariant::Unknown) {
-                    info.format          = variant_to_tex_format(info.variant);
-                    info.compressed_data = data + offset + 12;
-                    info.compressed_size = sec_end - (offset + 12);
-                    info.valid           = true;
-                }
+            size_t sub_payload = std::min(static_cast<size_t>(sub_size),
+                                          end - offset - sub_hlen);
+            HapVariant v = HapVariant::Unknown;
+            HapTextureFormat f = HapTextureFormat::Unknown;
+            if (section_type_to_variant_format(sub_type, v, f)) {
+                info.variant         = HapVariant::HAPQ_A;  // container variant
+                info.format          = f;
+                info.compressed_data = data + offset + sub_hlen;
+                info.compressed_size = sub_payload;
+                info.valid           = true;
                 return info;
             }
-
-            // Advance to next section.
-            offset = sec_end;
+            offset += sub_hlen + sub_payload;
         }
-        // No texture section found.
+        // No recognised nested section.
         return info;
     }
 
-    // --- Single-chunk frame: FourCC IS the texture format ---
-    info.variant = fourcc_to_variant(frame_fcc);
-    if (info.variant == HapVariant::Unknown) return info;
-
-    info.format          = variant_to_tex_format(info.variant);
-    info.compressed_data = data + 8;
-    // frame_remaining includes the 4-byte FourCC, so data = remaining - 4.
-    size_t data_avail = (frame_end > 8) ? (frame_end - 8) : 0;
-    if (frame_remaining >= 4) {
-        info.compressed_size = std::min(
-            static_cast<size_t>(frame_remaining - 4u), data_avail);
-    } else {
-        info.compressed_size = 0;
+    // Single-image top-level section.
+    HapVariant v = HapVariant::Unknown;
+    HapTextureFormat f = HapTextureFormat::Unknown;
+    if (!section_type_to_variant_format(section_type, v, f)) {
+        return info;  // unknown type (None/Complex compressors not yet supported)
     }
-    info.valid = true;
+
+    info.variant         = v;
+    info.format          = f;
+    info.compressed_data = data + header_len;
+    info.compressed_size = payload_size;
+    info.valid           = (payload_size > 0);
     return info;
 }
 
@@ -198,6 +237,14 @@ struct HapDecoder::Impl {
     int                tex_height  = 0;
     std::string        last_error;
     std::vector<uint8_t> decompressed;  // Snappy output buffer (reused)
+    bool               warned_about_thread = false;
+
+    // New: flag indicating that decompressed data is pending a GPU upload.
+    // Set by decode() (any thread), cleared by uploadToGpu() (graphics thread).
+    bool               pending_upload = false;
+    int                pending_width  = 0;
+    int                pending_height = 0;
+    HapTextureFormat   pending_format = HapTextureFormat::Unknown;
 
     ~Impl()
     {
@@ -257,7 +304,7 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-    // --- Snappy decompress ---
+    // --- Snappy decompress (CPU only — safe on any thread) ---
     size_t uncompressed_len = 0;
     if (!snappy::GetUncompressedLength(
             reinterpret_cast<const char *>(fi.compressed_data),
@@ -278,7 +325,6 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-    // --- Upload to GPU texture ---
     int w = pimpl_->video_info.width;
     int h = pimpl_->video_info.height;
     if (w <= 0 || h <= 0) {
@@ -286,47 +332,15 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-#ifdef DANCEHAP_HAVE_OBS
-    gs_color_format gs_fmt = map_to_gs_format(fi.format);
-
-    // Recreate texture if dimensions changed or first decode.
-    // OBS does not expose in-place update for compressed (DXT/BC) textures,
-    // so we destroy + recreate on every decode. This is acceptable for the
-    // MVP — Phase 5 can investigate staging-texture optimisation.
-    bool dims_changed = (pimpl_->tex_width != w || pimpl_->tex_height != h);
-    if (pimpl_->texture && dims_changed) {
-        gs_texture_destroy(pimpl_->texture);
-        pimpl_->texture = nullptr;
-    }
-
-    if (!pimpl_->texture) {
-        const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
-        pimpl_->texture = gs_texture_create(
-            static_cast<uint32_t>(w),
-            static_cast<uint32_t>(h),
-            gs_fmt, 1, tex_data, GS_DYNAMIC);
-        if (!pimpl_->texture) {
-            pimpl_->last_error = "gs_texture_create failed";
-            blog(LOG_ERROR, "[DanceHAP] HapDecoder: gs_texture_create failed "
-                 "(%dx%d %s)", w, h, hap_tex_format_to_string(fi.format));
-            return false;
-        }
-        pimpl_->tex_width  = w;
-        pimpl_->tex_height = h;
-    } else {
-        // Same dimensions: destroy + recreate to update compressed content.
-        gs_texture_destroy(pimpl_->texture);
-        const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
-        pimpl_->texture = gs_texture_create(
-            static_cast<uint32_t>(w),
-            static_cast<uint32_t>(h),
-            gs_fmt, 1, tex_data, GS_DYNAMIC);
-    }
-#else
-    // Snappy available but OBS graphics not (unusual build config).
-    // Decompression succeeded but we can't create a texture.
-    pimpl_->last_error = "OBS graphics not available for texture upload";
-#endif
+    // Mark decompressed data as pending a GPU upload. The actual
+    // gs_texture_create / gs_texture_set_image call happens in
+    // uploadToGpu(), which must be invoked from the OBS graphics thread
+    // (i.e. from hap_clip_video_render). Calling gs_texture_create from
+    // video_tick fails on Windows OBS 31 ("gs_texture_create failed").
+    pimpl_->pending_width  = w;
+    pimpl_->pending_height = h;
+    pimpl_->pending_format = fi.format;
+    pimpl_->pending_upload = true;
 
     pimpl_->tex_format = fi.format;
     pimpl_->last_error.clear();
@@ -335,6 +349,92 @@ bool HapDecoder::decode(const DemuxPacket &packet)
          fi.compressed_size, pimpl_->decompressed.size());
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// uploadToGpu — must be called from the OBS graphics thread
+// (i.e. from hap_clip_video_render). Creates or refreshes the gs_texture
+// with the latest decompressed DXT/BC data.
+// ---------------------------------------------------------------------------
+
+#ifdef DANCEHAP_HAVE_OBS
+void HapDecoder::uploadToGpu()
+{
+    if (!pimpl_->pending_upload) return;
+    if (pimpl_->decompressed.empty()) return;
+
+    int w = pimpl_->pending_width;
+    int h = pimpl_->pending_height;
+    gs_color_format gs_fmt = map_to_gs_format(pimpl_->pending_format);
+    if (gs_fmt == GS_UNKNOWN) {
+        pimpl_->last_error = "unsupported texture format for GPU upload";
+        pimpl_->pending_upload = false;
+        return;
+    }
+
+    // DIAGNOSTIC MODE: force a BGRA test pattern instead of uploading DXT5
+    // data. This lets us verify the render path independently of DXT5
+    // decoding issues. Controlled at compile time so it never leaks into
+    // production builds.
+#ifdef DANCEHAP_DEBUG_SOLID_COLOR
+    gs_fmt = GS_BGRA;
+    // Build a solid magenta opaque texture (BGRA: B=255, G=0, R=255, A=255)
+    pimpl_->decompressed.assign(
+        static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+    for (size_t i = 0; i < pimpl_->decompressed.size(); i += 4) {
+        pimpl_->decompressed[i + 0] = 0xFF;  // B
+        pimpl_->decompressed[i + 1] = 0x00;  // G
+        pimpl_->decompressed[i + 2] = 0xFF;  // R
+        pimpl_->decompressed[i + 3] = 0xFF;  // A
+    }
+    blog(LOG_WARNING, "[DanceHAP] HapDecoder: DEBUG_SOLID_COLOR active — "
+         "uploading %dx%d BGRA magenta instead of DXT5", w, h);
+#endif
+
+    // First attempt: log graphics context state for diagnostics.
+    if (!pimpl_->warned_about_thread) {
+        pimpl_->warned_about_thread = true;
+        blog(LOG_INFO, "[DanceHAP] HapDecoder: first GPU upload on graphics "
+             "thread (dims=%dx%d, fmt=%d)",
+             w, h, static_cast<int>(gs_fmt));
+    }
+
+    // OBS does not expose in-place update for compressed (DXT/BC) textures,
+    // so we destroy + recreate on every upload. Acceptable for MVP.
+    if (pimpl_->texture &&
+        (pimpl_->tex_width != w || pimpl_->tex_height != h)) {
+        gs_texture_destroy(pimpl_->texture);
+        pimpl_->texture = nullptr;
+    }
+
+    if (pimpl_->texture) {
+        // Same dimensions: destroy + recreate to refresh compressed content.
+        gs_texture_destroy(pimpl_->texture);
+        pimpl_->texture = nullptr;
+    }
+
+    const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
+    pimpl_->texture = gs_texture_create(
+        static_cast<uint32_t>(w),
+        static_cast<uint32_t>(h),
+        gs_fmt, 1, tex_data, GS_DYNAMIC);
+
+    if (!pimpl_->texture) {
+        pimpl_->last_error = "gs_texture_create failed";
+        blog(LOG_ERROR, "[DanceHAP] HapDecoder: gs_texture_create failed "
+             "(%dx%d %s) — graphics context may be missing",
+             w, h, hap_tex_format_to_string(pimpl_->pending_format));
+    } else {
+        pimpl_->tex_width  = w;
+        pimpl_->tex_height = h;
+        pimpl_->tex_format = pimpl_->pending_format;
+        pimpl_->last_error.clear();
+    }
+
+    pimpl_->pending_upload = false;
+}
+#else
+void HapDecoder::uploadToGpu() { pimpl_->pending_upload = false; }
+#endif
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -397,6 +497,12 @@ void HapDecoder::setVideoInfo(const VideoInfo &vi)
 
 bool HapDecoder::decode(const DemuxPacket &packet)
 {
+    // Always propagate the demuxer-provided video dimensions so callers can
+    // rely on getWidth()/getHeight() even when the frame parse fails. The
+    // dimensions come from the container, not the frame payload.
+    pimpl_->tex_width  = pimpl_->video_info.width;
+    pimpl_->tex_height = pimpl_->video_info.height;
+
     if (!packet.valid || packet.data.empty()) {
         pimpl_->last_error = "invalid or empty packet";
         return false;
@@ -414,13 +520,14 @@ bool HapDecoder::decode(const DemuxPacket &packet)
     // Record parsed metadata for test inspection.
     pimpl_->last_variant = fi.variant;
     pimpl_->tex_format   = fi.format;
-    pimpl_->tex_width    = pimpl_->video_info.width;
-    pimpl_->tex_height   = pimpl_->video_info.height;
 
     // Stub mode: no Snappy → cannot decompress → decode fails gracefully.
     pimpl_->last_error = "stub mode: Snappy not available, decode skipped";
     return false;
 }
+
+// uploadToGpu: no-op in stub mode (no GPU, no Snappy).
+void HapDecoder::uploadToGpu() { /* no-op */ }
 
 // ---------------------------------------------------------------------------
 // Queries
