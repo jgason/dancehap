@@ -200,7 +200,7 @@ obs_properties_t *hap_clip_get_properties(void * /*data*/)
         "path",
         "Clip file path",
         OBS_PATH_FILE,
-        "HAP clips (*.mov *.mp4)",
+        "HAP clips (*.mov)",
         "");
 
     obs_properties_add_bool(props, "loop", "Loop");

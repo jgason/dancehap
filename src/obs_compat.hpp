@@ -55,8 +55,10 @@ typedef struct gs_texture gs_texture_t_inner;
 struct obs_data {
     std::map<std::string, std::string> strings;
     std::map<std::string, bool>        bools;
+    std::map<std::string, long long>   ints;
     std::map<std::string, std::string> default_strings;
     std::map<std::string, bool>        default_bools;
+    std::map<std::string, long long>   default_ints;
     long ref_count = 1;
 };
 typedef struct obs_data obs_data;
@@ -67,7 +69,11 @@ struct obs_properties {
     struct property {
         std::string name;
         std::string description;
-        std::string kind;   // "path", "bool"
+        std::string kind;   // "path", "bool", "int"
+        std::string filter; // file filter (path properties only)
+        int min_val = 0;    // min value (int properties only)
+        int max_val = 0;    // max value (int properties only)
+        int step_val = 1;   // step value (int properties only)
     };
     std::vector<property> props;
 };
@@ -155,8 +161,11 @@ void              obs_data_set_default_string(obs_data_t *settings,
                                               const char *name, const char *val);
 void              obs_data_set_default_bool(obs_data_t *settings,
                                             const char *name, bool val);
+void              obs_data_set_default_int(obs_data_t *settings,
+                                           const char *name, long long val);
 const char       *obs_data_get_string(obs_data_t *settings, const char *name);
 bool              obs_data_get_bool(obs_data_t *settings, const char *name);
+long long         obs_data_get_int(obs_data_t *settings, const char *name);
 
 // obs_properties
 obs_properties_t *obs_properties_create(void);
@@ -170,6 +179,10 @@ obs_properties_t *obs_properties_add_path(obs_properties_t *props,
 obs_properties_t *obs_properties_add_bool(obs_properties_t *props,
                                           const char *name,
                                           const char *description);
+obs_properties_t *obs_properties_add_int(obs_properties_t *props,
+                                         const char *name,
+                                         const char *description,
+                                         int min_val, int max_val, int step_val);
 
 // Source registration
 void obs_register_source_s(const struct obs_source_info *info, std::size_t size);

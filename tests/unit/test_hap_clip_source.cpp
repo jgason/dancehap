@@ -145,6 +145,32 @@ TEST_F(HapClipSourceTest, PropertiesHasPathLoopAutoplay)
     obs_properties_destroy(props);
 }
 
+// Phase 1.5.a Étape 1: file dialog filter must restrict to .mov HAP clips.
+TEST_F(HapClipSourceTest, GetPropertiesReturnsHapMovFilter)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+    ASSERT_NE(info->get_properties, nullptr);
+
+    obs_properties_t *props = info->get_properties(nullptr);
+    ASSERT_NE(props, nullptr);
+
+    const obs_properties::property *path_prop = find_property(props, "path");
+    ASSERT_NE(path_prop, nullptr);
+    EXPECT_EQ(path_prop->kind, "path");
+
+    // The filter must include *.mov (the canonical HAP container).
+    EXPECT_NE(path_prop->filter.find("*.mov"), std::string::npos)
+        << "path filter should include *.mov; got: '" << path_prop->filter << "'";
+
+    // The filter must NOT include *.mp4 (HAP .mp4 is rare; restricting to
+    // .mov avoids confusion with regular H.264 .mp4 files).
+    EXPECT_EQ(path_prop->filter.find("*.mp4"), std::string::npos)
+        << "path filter should NOT include *.mp4; got: '" << path_prop->filter << "'";
+
+    obs_properties_destroy(props);
+}
+
 // ===========================================================================
 // Lifecycle
 // ===========================================================================
