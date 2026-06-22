@@ -285,9 +285,33 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
     ctx->player.uploadToGpu();
 
     gs_texture_t *tex = ctx->player.getTexture();
-    if (!tex) return;  // stub mode or no decoded frame yet
+    if (!tex) {
+        // Log the first ~5 times video_render is called with no texture, so
+        // we can tell from the OBS log whether video_render is being reached.
+        static int no_tex_log_count = 0;
+        if (no_tex_log_count < 5) {
+            ++no_tex_log_count;
+            blog(LOG_WARNING, "[DanceHAP] video_render: no texture yet "
+                 "(state=%d, hasVideo=%d, frameCount=%d, lastError='%s')",
+                 (int)ctx->player.getState(),
+                 (int)ctx->player.hasVideo(),
+                 ctx->player.getFrameCount(),
+                 ctx->player.getLastError().c_str());
+        }
+        return;
+    }
 
 #ifdef DANCEHAP_HAVE_OBS
+    // Log the first successful draw so we can confirm render path is reached.
+    static thread_local bool logged_first_draw = false;
+    if (!logged_first_draw) {
+        logged_first_draw = true;
+        blog(LOG_INFO, "[DanceHAP] video_render: first draw with valid "
+             "texture %dx%d fmt=%d", ctx->player.getVideoWidth(),
+             ctx->player.getVideoHeight(),
+             (int)ctx->player.getVideoInfo().variant);
+    }
+
     // OBS draw pattern (per obs-source.c::render_filter_tex): the default
     // effect must be activated via its technique before calling
     // gs_draw_sprite, otherwise nothing renders (the framebuffer stays
@@ -308,7 +332,8 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
         }
         gs_technique_end(tech);
     } else {
-        // Fallback: older OBS effect loop API.
+        blog(LOG_WARNING, "[DanceHAP] video_render: effect has no 'Draw' "
+             "technique, trying gs_effect_loop fallback");
         while (gs_effect_loop(effect, "Draw")) {
             gs_draw_sprite(tex, 0, w, h);
         }
