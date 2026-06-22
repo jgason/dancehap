@@ -374,10 +374,9 @@ void HapDecoder::uploadToGpu()
     // First attempt: log graphics context state for diagnostics.
     if (!pimpl_->warned_about_thread) {
         pimpl_->warned_about_thread = true;
-        enum gs_device_type dev_type = gs_get_device_type();
         blog(LOG_INFO, "[DanceHAP] HapDecoder: first GPU upload on graphics "
-             "thread (device_type=%d, dims=%dx%d, fmt=%d)",
-             (int)dev_type, w, h, (int)gs_fmt);
+             "thread (dims=%dx%d, fmt=%d)",
+             w, h, static_cast<int>(gs_fmt));
     }
 
     // OBS does not expose in-place update for compressed (DXT/BC) textures,
