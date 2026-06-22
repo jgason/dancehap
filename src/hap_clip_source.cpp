@@ -135,7 +135,11 @@ struct hap_clip_context {
 
 const char *hap_clip_get_name(void * /*type_data*/)
 {
-    return HAP_CLIP_SOURCE_NAME;
+    // Embed the version directly in the source name so it shows up in the
+    // OBS "Add source" menu, the scene source list, and the properties
+    // window title. This lets the operator confirm at a glance which DLL
+    // version is actually loaded — critical when iterating on smoke tests.
+    return HAP_CLIP_SOURCE_NAME " v" DANCEHAP_VERSION_STRING;
 }
 
 void *hap_clip_create(obs_data_t *settings, obs_source_t *source)
@@ -274,6 +278,11 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
 {
     auto *ctx = static_cast<hap_clip_context *>(data);
     if (!ctx) return;
+
+    // Upload any pending decoded frame to the GPU. This MUST happen on the
+    // graphics thread (i.e. here in video_render) — gs_texture_create fails
+    // when called from video_tick on Windows OBS 31.
+    ctx->player.uploadToGpu();
 
     gs_texture_t *tex = ctx->player.getTexture();
     if (!tex) return;  // stub mode or no decoded frame yet

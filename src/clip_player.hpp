@@ -173,6 +173,11 @@ public:
 
     /// Current decoded texture (nullptr in stub mode or before first frame).
     gs_texture_t *getTexture() const;
+
+    /// Upload any pending decompressed frame to the GPU. Must be called
+    /// from the OBS graphics thread (i.e. from video_render).
+    void uploadToGpu();
+
     int          getVideoWidth() const;
     int          getVideoHeight() const;
 

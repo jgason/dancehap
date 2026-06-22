@@ -237,6 +237,14 @@ struct HapDecoder::Impl {
     int                tex_height  = 0;
     std::string        last_error;
     std::vector<uint8_t> decompressed;  // Snappy output buffer (reused)
+    bool               warned_about_thread = false;
+
+    // New: flag indicating that decompressed data is pending a GPU upload.
+    // Set by decode() (any thread), cleared by uploadToGpu() (graphics thread).
+    bool               pending_upload = false;
+    int                pending_width  = 0;
+    int                pending_height = 0;
+    HapTextureFormat   pending_format = HapTextureFormat::Unknown;
 
     ~Impl()
     {
@@ -296,7 +304,7 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-    // --- Snappy decompress ---
+    // --- Snappy decompress (CPU only — safe on any thread) ---
     size_t uncompressed_len = 0;
     if (!snappy::GetUncompressedLength(
             reinterpret_cast<const char *>(fi.compressed_data),
@@ -317,7 +325,6 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-    // --- Upload to GPU texture ---
     int w = pimpl_->video_info.width;
     int h = pimpl_->video_info.height;
     if (w <= 0 || h <= 0) {
@@ -325,47 +332,15 @@ bool HapDecoder::decode(const DemuxPacket &packet)
         return false;
     }
 
-#ifdef DANCEHAP_HAVE_OBS
-    gs_color_format gs_fmt = map_to_gs_format(fi.format);
-
-    // Recreate texture if dimensions changed or first decode.
-    // OBS does not expose in-place update for compressed (DXT/BC) textures,
-    // so we destroy + recreate on every decode. This is acceptable for the
-    // MVP — Phase 5 can investigate staging-texture optimisation.
-    bool dims_changed = (pimpl_->tex_width != w || pimpl_->tex_height != h);
-    if (pimpl_->texture && dims_changed) {
-        gs_texture_destroy(pimpl_->texture);
-        pimpl_->texture = nullptr;
-    }
-
-    if (!pimpl_->texture) {
-        const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
-        pimpl_->texture = gs_texture_create(
-            static_cast<uint32_t>(w),
-            static_cast<uint32_t>(h),
-            gs_fmt, 1, tex_data, GS_DYNAMIC);
-        if (!pimpl_->texture) {
-            pimpl_->last_error = "gs_texture_create failed";
-            blog(LOG_ERROR, "[DanceHAP] HapDecoder: gs_texture_create failed "
-                 "(%dx%d %s)", w, h, hap_tex_format_to_string(fi.format));
-            return false;
-        }
-        pimpl_->tex_width  = w;
-        pimpl_->tex_height = h;
-    } else {
-        // Same dimensions: destroy + recreate to update compressed content.
-        gs_texture_destroy(pimpl_->texture);
-        const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
-        pimpl_->texture = gs_texture_create(
-            static_cast<uint32_t>(w),
-            static_cast<uint32_t>(h),
-            gs_fmt, 1, tex_data, GS_DYNAMIC);
-    }
-#else
-    // Snappy available but OBS graphics not (unusual build config).
-    // Decompression succeeded but we can't create a texture.
-    pimpl_->last_error = "OBS graphics not available for texture upload";
-#endif
+    // Mark decompressed data as pending a GPU upload. The actual
+    // gs_texture_create / gs_texture_set_image call happens in
+    // uploadToGpu(), which must be invoked from the OBS graphics thread
+    // (i.e. from hap_clip_video_render). Calling gs_texture_create from
+    // video_tick fails on Windows OBS 31 ("gs_texture_create failed").
+    pimpl_->pending_width  = w;
+    pimpl_->pending_height = h;
+    pimpl_->pending_format = fi.format;
+    pimpl_->pending_upload = true;
 
     pimpl_->tex_format = fi.format;
     pimpl_->last_error.clear();
@@ -374,6 +349,74 @@ bool HapDecoder::decode(const DemuxPacket &packet)
          fi.compressed_size, pimpl_->decompressed.size());
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// uploadToGpu — must be called from the OBS graphics thread
+// (i.e. from hap_clip_video_render). Creates or refreshes the gs_texture
+// with the latest decompressed DXT/BC data.
+// ---------------------------------------------------------------------------
+
+#ifdef DANCEHAP_HAVE_OBS
+void HapDecoder::uploadToGpu()
+{
+    if (!pimpl_->pending_upload) return;
+    if (pimpl_->decompressed.empty()) return;
+
+    int w = pimpl_->pending_width;
+    int h = pimpl_->pending_height;
+    gs_color_format gs_fmt = map_to_gs_format(pimpl_->pending_format);
+    if (gs_fmt == GS_UNKNOWN) {
+        pimpl_->last_error = "unsupported texture format for GPU upload";
+        pimpl_->pending_upload = false;
+        return;
+    }
+
+    // First attempt: log graphics context state for diagnostics.
+    if (!pimpl_->warned_about_thread) {
+        pimpl_->warned_about_thread = true;
+        enum gs_device_type dev_type = gs_get_device_type();
+        blog(LOG_INFO, "[DanceHAP] HapDecoder: first GPU upload on graphics "
+             "thread (device_type=%d, dims=%dx%d, fmt=%d)",
+             (int)dev_type, w, h, (int)gs_fmt);
+    }
+
+    // OBS does not expose in-place update for compressed (DXT/BC) textures,
+    // so we destroy + recreate on every upload. Acceptable for MVP.
+    if (pimpl_->texture &&
+        (pimpl_->tex_width != w || pimpl_->tex_height != h)) {
+        gs_texture_destroy(pimpl_->texture);
+        pimpl_->texture = nullptr;
+    }
+
+    if (pimpl_->texture) {
+        // Same dimensions: destroy + recreate to refresh compressed content.
+        gs_texture_destroy(pimpl_->texture);
+        pimpl_->texture = nullptr;
+    }
+
+    const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
+    pimpl_->texture = gs_texture_create(
+        static_cast<uint32_t>(w),
+        static_cast<uint32_t>(h),
+        gs_fmt, 1, tex_data, GS_DYNAMIC);
+
+    if (!pimpl_->texture) {
+        pimpl_->last_error = "gs_texture_create failed";
+        blog(LOG_ERROR, "[DanceHAP] HapDecoder: gs_texture_create failed "
+             "(%dx%d %s) — graphics context may be missing",
+             w, h, hap_tex_format_to_string(pimpl_->pending_format));
+    } else {
+        pimpl_->tex_width  = w;
+        pimpl_->tex_height = h;
+        pimpl_->tex_format = pimpl_->pending_format;
+        pimpl_->last_error.clear();
+    }
+
+    pimpl_->pending_upload = false;
+}
+#else
+void HapDecoder::uploadToGpu() { pimpl_->pending_upload = false; }
+#endif
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -464,6 +507,9 @@ bool HapDecoder::decode(const DemuxPacket &packet)
     pimpl_->last_error = "stub mode: Snappy not available, decode skipped";
     return false;
 }
+
+// uploadToGpu: no-op in stub mode (no GPU, no Snappy).
+void HapDecoder::uploadToGpu() { /* no-op */ }
 
 // ---------------------------------------------------------------------------
 // Queries

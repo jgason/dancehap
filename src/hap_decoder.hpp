@@ -132,11 +132,19 @@ public:
     /// texture dimensions (which are not stored in the HAP frame itself).
     void setVideoInfo(const VideoInfo &vi);
 
-    /// Decode a HAP packet into a GPU texture.
+    /// Decode a HAP packet (CPU-only: Snappy decompress).
+    /// Safe to call from any thread (typically the video_tick thread).
+    /// Does NOT touch the GPU — the decompressed DXT/BC data is buffered
+    /// internally and uploaded on the next uploadToGpu() call.
     /// Returns true on success.
-    /// On error: keeps the previous texture (no crash), sets last_error,
-    /// returns false.
     bool decode(const DemuxPacket &packet);
+
+    /// Upload the latest decompressed frame to the GPU as a gs_texture.
+    /// MUST be called from the OBS graphics thread (i.e. from
+    /// hap_clip_video_render). Calling it from video_tick will fail on
+    /// Windows OBS 31 because no graphics context is active there.
+    /// No-op if no frame is pending or OBS graphics are unavailable.
+    void uploadToGpu();
 
     /// Current texture handle.
     /// Real mode: valid gs_texture_t after successful decode().

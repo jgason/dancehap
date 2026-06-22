@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "hap_clip_source.hpp"
 #include "obs_compat.hpp"
 #include "plugin.hpp"
@@ -82,7 +84,14 @@ TEST_F(HapClipSourceTest, GetNameReturnsDisplayName)
     ASSERT_NE(info->get_name, nullptr);
     const char *name = info->get_name(nullptr);
     ASSERT_NE(name, nullptr);
-    EXPECT_STREQ(name, HAP_CLIP_SOURCE_NAME);
+    // The name embeds the build version so the operator can confirm the
+    // deployed DLL at a glance in OBS. It must start with the base display
+    // name and include a version suffix "vX.Y.Z".
+    std::string s(name);
+    EXPECT_NE(s.find(HAP_CLIP_SOURCE_NAME), std::string::npos)
+        << "name='" << s << "' missing base name '" << HAP_CLIP_SOURCE_NAME << "'";
+    EXPECT_NE(s.find("v"), std::string::npos)
+        << "name='" << s << "' missing version suffix";
 }
 
 // ===========================================================================
