@@ -288,11 +288,31 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
     if (!tex) return;  // stub mode or no decoded frame yet
 
 #ifdef DANCEHAP_HAVE_OBS
-    gs_effect_set_texture(
-        gs_effect_get_param_by_name(effect, "image"), tex);
-    gs_draw_sprite(tex, 0,
-                   ctx->player.getVideoWidth(),
-                   ctx->player.getVideoHeight());
+    // OBS draw pattern (per obs-source.c::render_filter_tex): the default
+    // effect must be activated via its technique before calling
+    // gs_draw_sprite, otherwise nothing renders (the framebuffer stays
+    // as it was — typically black for a fresh source).
+    uint32_t w = static_cast<uint32_t>(ctx->player.getVideoWidth());
+    uint32_t h = static_cast<uint32_t>(ctx->player.getVideoHeight());
+
+    gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+    gs_effect_set_texture(image, tex);
+
+    gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
+    if (tech) {
+        size_t passes = gs_technique_begin(tech);
+        for (size_t i = 0; i < passes; ++i) {
+            gs_technique_begin_pass(tech, i);
+            gs_draw_sprite(tex, 0, w, h);
+            gs_technique_end_pass(tech);
+        }
+        gs_technique_end(tech);
+    } else {
+        // Fallback: older OBS effect loop API.
+        while (gs_effect_loop(effect, "Draw")) {
+            gs_draw_sprite(tex, 0, w, h);
+        }
+    }
 #endif
     // Stub mode: no OBS graphics API — safe no-op.
 }
