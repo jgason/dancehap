@@ -312,12 +312,18 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
              (int)ctx->player.getVideoInfo().variant);
     }
 
-    // OBS draw pattern (per obs-source.c::render_filter_tex): the default
-    // effect must be activated via its technique before calling
-    // gs_draw_sprite, otherwise nothing renders (the framebuffer stays
-    // as it was — typically black for a fresh source).
+    // OBS draw pattern (per obs-source.c::render_filter_tex and
+    // plugins/image-source/image_source_render): the default effect must
+    // be activated via its technique before calling gs_draw_sprite. For
+    // textures with alpha (DXT5 / HAPA), we must also push a blend state
+    // that interprets the texture's alpha channel — otherwise the source
+    // renders fully transparent (the framebuffer keeps whatever was there
+    // before, i.e. the background color shows through completely).
     uint32_t w = static_cast<uint32_t>(ctx->player.getVideoWidth());
     uint32_t h = static_cast<uint32_t>(ctx->player.getVideoHeight());
+
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
     gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
     gs_effect_set_texture(image, tex);
@@ -338,6 +344,8 @@ void hap_clip_video_render(void *data, gs_effect_t *effect)
             gs_draw_sprite(tex, 0, w, h);
         }
     }
+
+    gs_blend_state_pop();
 #endif
     // Stub mode: no OBS graphics API — safe no-op.
 }
