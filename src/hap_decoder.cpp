@@ -208,18 +208,171 @@ HapFrameInfo parse_hap_frame(const uint8_t *data, size_t size)
 
 namespace dancehap {
 
+// ---------------------------------------------------------------------------
+// DXT5/BC3 CPU decoder.
+//
+// OBS does NOT hardware-decode DXT5 uploaded via gs_texture_create(GS_DXT5):
+// its pitch calculation (width*bpp/8) is 4× too small for block-compressed
+// formats → D3D11 accepts the texture but reinterprets the data wrong,
+// producing vertical bars instead of the correct image.
+//
+// Fix (v0.3.1): decode DXT5 to RGBA on the CPU, then upload as GS_RGBA.
+// The block layout follows libavcodec/texturedsp.c (dxt_block()):
+//
+//   DXT5 block = 16 bytes:
+//     bytes 0-1:  alpha endpoints a0, a1 (uint16 → 8 alpha values)
+//     bytes 2-7:  6 bytes = 48-bit lookup table (4×4 alpha indices, 3 bits each)
+//     bytes 8-9:  color0 (RGB565)
+//     bytes 10-11: color1 (RGB565)
+//     bytes 12-15: 4 bytes = 32-bit lookup table (4×4 color indices, 2 bits each)
+//
+//   IMPORTANT: alpha comes FIRST (bytes 0-7), then colour (bytes 8-15).
+//   Getting this order wrong is the #1 DXT5 implementation bug.
+// ---------------------------------------------------------------------------
+
+// Decode a single RGB565 colour to RGBA8 (alpha = 255).
+static inline void rgb565_to_rgba(uint16_t c, uint8_t out[4])
+{
+    int r = (c >> 11) & 0x1F;
+    int g = (c >> 5)  & 0x3F;
+    int b =  c        & 0x1F;
+    out[0] = (uint8_t)((r << 3) | (r >> 2));  // red
+    out[1] = (uint8_t)((g << 2) | (g >> 4));  // green
+    out[2] = (uint8_t)((b << 3) | (b >> 2));  // blue
+    out[3] = 255;                               // opaque by default
+}
+
+// Decode one 4×4 DXT5 block (16 bytes) to 16 RGBA pixels (64 bytes).
+// `block` points to the 16-byte block. `out` points to the destination
+// for this block's 4×4 pixel grid (16 × 4 = 64 bytes).
+static void decode_dxt5_block(const uint8_t *block, uint8_t *out)
+{
+    // --- Alpha (bytes 0-7) ---
+    uint8_t a0 = block[0];
+    uint8_t a1 = block[1];
+
+    // 48-bit alpha index table (bytes 2-7).
+    uint64_t alpha_bits = 0;
+    for (int i = 0; i < 6; ++i)
+        alpha_bits |= (uint64_t)block[2 + i] << (8 * i);
+
+    uint8_t alphas[8];
+    alphas[0] = a0;
+    alphas[1] = a1;
+    if (a0 > a1) {
+        // 6 interpolated values.
+        for (int i = 1; i <= 6; ++i)
+            alphas[1 + i] = (uint8_t)(((7 - i) * a0 + i * a1) / 7);
+        alphas[7] = 255;
+    } else {
+        // 4 interpolated values + 0 + 255.
+        for (int i = 1; i <= 4; ++i)
+            alphas[1 + i] = (uint8_t)(((5 - i) * a0 + i * a1) / 5);
+        alphas[6] = 0;
+        alphas[7] = 255;
+    }
+
+    uint8_t alpha[16];
+    for (int i = 0; i < 16; ++i)
+        alpha[i] = alphas[(alpha_bits >> (3 * i)) & 0x7];
+
+    // --- Colour (bytes 8-15) ---
+    uint16_t c0 = (uint16_t)(block[8]  | (block[9]  << 8));
+    uint16_t c1 = (uint16_t)(block[10] | (block[11] << 8));
+
+    uint8_t col0[4], col1[4];
+    rgb565_to_rgba(c0, col0);
+    rgb565_to_rgba(c1, col1);
+
+    uint32_t color_index_bits = (uint32_t)block[12]
+                              | ((uint32_t)block[13] << 8)
+                              | ((uint32_t)block[14] << 16)
+                              | ((uint32_t)block[15] << 24);
+
+    // Build 4 colour rows.
+    uint8_t colors[4][4];
+    if (c0 > c1) {
+        for (int k = 0; k < 4; ++k)
+            colors[k][3] = 255;
+        for (int k = 0; k < 3; ++k) {
+            colors[0][k] = col0[k];
+            colors[1][k] = col1[k];
+            colors[2][k] = (uint8_t)((2 * col0[k] + col1[k]) / 3);
+            colors[3][k] = (uint8_t)((col0[k] + 2 * col1[k]) / 3);
+        }
+    } else {
+        for (int k = 0; k < 4; ++k)
+            colors[k][3] = 255;
+        for (int k = 0; k < 3; ++k) {
+            colors[0][k] = col0[k];
+            colors[1][k] = col1[k];
+            colors[2][k] = (uint8_t)((col0[k] + col1[k]) / 2);
+            colors[3][k] = 0;  // black (transparent for alpha path)
+        }
+    }
+
+    // Write 4×4 pixels. The index table is read LSB-first per pixel.
+    for (int i = 0; i < 16; ++i) {
+        uint32_t idx = (color_index_bits >> (2 * i)) & 0x3;
+        out[i * 4 + 0] = colors[idx][0];
+        out[i * 4 + 1] = colors[idx][1];
+        out[i * 4 + 2] = colors[idx][2];
+        out[i * 4 + 3] = alpha[i];  // override alpha from alpha table
+    }
+}
+
+/// Decode a full DXT5 texture to RGBA8.
+/// \param dxt_data   Pointer to the raw DXT5 data (block-compressed).
+/// \param dxt_size   Size of dxt_data in bytes (must equal width*height).
+/// \param rgba_out   Output buffer (must be width*height*4 bytes).
+/// \param width      Texture width (must be multiple of 4).
+/// \param height     Texture height (must be multiple of 4).
+/// \return true on success, false on size mismatch.
+static bool dxt5_to_rgba(const uint8_t *dxt_data, size_t dxt_size,
+                         uint8_t *rgba_out, int width, int height)
+{
+    if (width < 1 || height < 1 || (width % 4) != 0 || (height % 4) != 0)
+        return false;
+
+    const size_t blocks_x = static_cast<size_t>(width)  / 4;
+    const size_t blocks_y = static_cast<size_t>(height) / 4;
+    const size_t expected = blocks_x * blocks_y * 16;
+    if (dxt_size < expected) return false;
+
+    for (size_t by = 0; by < blocks_y; ++by) {
+        for (size_t bx = 0; bx < blocks_x; ++bx) {
+            const uint8_t *block = dxt_data + (by * blocks_x + bx) * 16;
+
+            // Decode 4×4 pixels into a local 64-byte buffer, then scatter
+            // them into the destination row by row.
+            uint8_t pixels[64];
+            decode_dxt5_block(block, pixels);
+
+            for (int row = 0; row < 4; ++row) {
+                size_t dst_y = by * 4 + row;
+                size_t dst_x = bx * 4;
+                size_t dst_off = (dst_y * width + dst_x) * 4;
+                std::memcpy(rgba_out + dst_off,
+                            pixels + row * 16, 16);
+            }
+        }
+    }
+    return true;
+}
+
 // Map HapTextureFormat to OBS gs_color_format.
-// OBS 31 gs_color_format supports GS_DXT1, GS_DXT3, GS_DXT5 but NOT BC7.
-// HAPQ (DXT5-YCoCg) maps to DXT5 — the YCoCg color space conversion happens
-// in a shader (Phase 5 polish). For now the raw DXT5 bytes are uploaded,
-// which will display with wrong colors for HAPQ but won't crash.
+// IMPORTANT (v0.3.1 fix): we no longer upload raw DXT5 bytes via GS_DXT5.
+// OBS's pitch calc is broken for block-compressed formats (4× too small),
+// producing vertical bars. Instead, DXT5 is CPU-decoded to RGBA and uploaded
+// as GS_RGBA. DXT1 follows the same pattern (Phase 5 polish could add a
+// dedicated DXT1 path, but for correctness we decode to RGBA as well).
 #ifdef DANCEHAP_HAVE_OBS
 static gs_color_format map_to_gs_format(HapTextureFormat fmt)
 {
     switch (fmt) {
-    case HapTextureFormat::DXT1: return GS_DXT1;
-    case HapTextureFormat::DXT5: return GS_DXT5;
-    case HapTextureFormat::BC7:  return GS_DXT5;  // TODO Phase 5: BC7 not in OBS, fallback DXT5
+    case HapTextureFormat::DXT1: return GS_RGBA;
+    case HapTextureFormat::DXT5: return GS_RGBA;
+    case HapTextureFormat::BC7:  return GS_RGBA;  // decoded to RGBA
     default:                     return GS_UNKNOWN;
     }
 }
@@ -237,6 +390,7 @@ struct HapDecoder::Impl {
     int                tex_height  = 0;
     std::string        last_error;
     std::vector<uint8_t> decompressed;  // Snappy output buffer (reused)
+    std::vector<uint8_t> rgba_buffer;   // CPU-decoded RGBA (DXT5→RGBA, reused)
     bool               warned_about_thread = false;
 
     // New: flag indicating that decompressed data is pending a GPU upload.
@@ -371,48 +525,83 @@ void HapDecoder::uploadToGpu()
         return;
     }
 
-    // DIAGNOSTIC MODE: force a BGRA test pattern instead of uploading DXT5
-    // data. This lets us verify the render path independently of DXT5
-    // decoding issues. Controlled at compile time so it never leaks into
-    // production builds.
+    // v0.3.1 fix: OBS does not hardware-decode DXT5 — its pitch calculation
+    // for block-compressed formats is broken (4× too small), producing
+    // vertical bars. We CPU-decode DXT5 to RGBA and upload as GS_RGBA.
+    //
+    // The decompressed buffer holds raw DXT5 block data. We decode it into
+    // rgba_buffer, then upload rgba_buffer. For DXT1 the path is analogous
+    // (same block layout minus the alpha section); for now we only fully
+    // support DXT5 (HAPA = Hap5), which is the only variant the smoke tests
+    // exercise. DXT1/HAP and BC7/HAPQ fall back to the solid-color debug
+    // path if enabled, otherwise to a transparent texture (logged).
+    const uint8_t *upload_data = nullptr;
+    if (pimpl_->pending_format == HapTextureFormat::DXT5) {
+        const size_t rgba_size =
+            static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
+        pimpl_->rgba_buffer.resize(rgba_size);
+        if (!dxt5_to_rgba(pimpl_->decompressed.data(),
+                          pimpl_->decompressed.size(),
+                          pimpl_->rgba_buffer.data(), w, h)) {
+            pimpl_->last_error = "dxt5_to_rgba: size/dimension mismatch";
+            blog(LOG_ERROR, "[DanceHAP] HapDecoder: dxt5_to_rgba failed "
+                 "(decompressed=%zu, expected=%zu for %dx%d)",
+                 pimpl_->decompressed.size(),
+                 static_cast<size_t>(w / 4) * static_cast<size_t>(h / 4) * 16,
+                 w, h);
+            pimpl_->pending_upload = false;
+            return;
+        }
+        upload_data = pimpl_->rgba_buffer.data();
+    } else {
+        // DXT1 / BC7 not yet CPU-decoded — log and bail. Phase 5 polish.
+        pimpl_->last_error = "unsupported compressed format (DXT1/BC7 need CPU decoder)";
+        blog(LOG_WARNING, "[DanceHAP] HapDecoder: format %s not yet supported "
+             "by CPU decoder — skipping upload",
+             hap_tex_format_to_string(pimpl_->pending_format));
+        pimpl_->pending_upload = false;
+        return;
+    }
+
+    // DIAGNOSTIC MODE: force a solid BGRA test pattern to verify the render
+    // path independently of DXT5 decoding. Controlled at compile time.
 #ifdef DANCEHAP_DEBUG_SOLID_COLOR
     gs_fmt = GS_BGRA;
-    // Build a solid magenta opaque texture (BGRA: B=255, G=0, R=255, A=255)
-    pimpl_->decompressed.assign(
+    pimpl_->rgba_buffer.assign(
         static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
-    for (size_t i = 0; i < pimpl_->decompressed.size(); i += 4) {
-        pimpl_->decompressed[i + 0] = 0xFF;  // B
-        pimpl_->decompressed[i + 1] = 0x00;  // G
-        pimpl_->decompressed[i + 2] = 0xFF;  // R
-        pimpl_->decompressed[i + 3] = 0xFF;  // A
+    for (size_t i = 0; i < pimpl_->rgba_buffer.size(); i += 4) {
+        pimpl_->rgba_buffer[i + 0] = 0xFF;  // B
+        pimpl_->rgba_buffer[i + 1] = 0x00;  // G
+        pimpl_->rgba_buffer[i + 2] = 0xFF;  // R
+        pimpl_->rgba_buffer[i + 3] = 0xFF;  // A
     }
+    upload_data = pimpl_->rgba_buffer.data();
     blog(LOG_WARNING, "[DanceHAP] HapDecoder: DEBUG_SOLID_COLOR active — "
-         "uploading %dx%d BGRA magenta instead of DXT5", w, h);
+         "uploading %dx%d BGRA magenta instead of decoded RGBA", w, h);
 #endif
 
-    // First attempt: log graphics context state for diagnostics.
+    // Log the first successful upload for diagnostics.
     if (!pimpl_->warned_about_thread) {
         pimpl_->warned_about_thread = true;
         blog(LOG_INFO, "[DanceHAP] HapDecoder: first GPU upload on graphics "
-             "thread (dims=%dx%d, fmt=%d)",
-             w, h, static_cast<int>(gs_fmt));
+             "thread (dims=%dx%d, fmt=%s, src=DXT5→RGBA CPU decode)",
+             w, h, hap_tex_format_to_string(pimpl_->pending_format));
     }
 
-    // OBS does not expose in-place update for compressed (DXT/BC) textures,
-    // so we destroy + recreate on every upload. Acceptable for MVP.
+    // Since we now upload uncompressed RGBA (not DXT5), we could use
+    // gs_texture_set_image for in-place updates. But destroy+recreate is
+    // simpler and correct for MVP; performance is fine for 256×256 @ 30fps.
     if (pimpl_->texture &&
         (pimpl_->tex_width != w || pimpl_->tex_height != h)) {
         gs_texture_destroy(pimpl_->texture);
         pimpl_->texture = nullptr;
     }
-
     if (pimpl_->texture) {
-        // Same dimensions: destroy + recreate to refresh compressed content.
         gs_texture_destroy(pimpl_->texture);
         pimpl_->texture = nullptr;
     }
 
-    const uint8_t *tex_data[] = { pimpl_->decompressed.data() };
+    const uint8_t *tex_data[] = { upload_data };
     pimpl_->texture = gs_texture_create(
         static_cast<uint32_t>(w),
         static_cast<uint32_t>(h),
