@@ -35,8 +35,11 @@ au-delà de la property view OBS standard.
 - [x] Décode HAP : Snappy decompress → upload texture DXT1/DXT5 (Phase 1.3, PR #4)
 - [x] Boucle de rendu + synchro A/V (audio master clock, ADR-007) (Phase 1.4, PR #5)
 - [x] États : idle / loading / playing / looping / ended (Phase 1.4)
-- [ ] Routing audio OBS natif (décodage AAC → PCM, Phase 1.5+)
-- [ ] Smoke test OBS Windows + macOS (manuel Jean-Luc)
+- [x] Routing audio OBS natif (décodage AAC → PCM, Phase 1.5.c, PR #9, v0.3.2)
+- [x] Properties UI : chemin + loop + autoplay + volume (Phase 1.5.a, PR #8)
+- [x] Smoke scripts Windows + macOS (`tests/smoke/run_smoke_windows.ps1`, `run_smoke_macos.sh`, Phase 1.6)
+- [x] Smoke test OBS Windows validé 2026-06-24 par Jean-Luc (v0.3.2 : vidéo + audio AAC + audio PCM)
+- [ ] Smoke test OBS macOS (à exécuter par Jean-Luc si macOS disponible)
 
 **Critère de sortie** : on peut ajouter une source « DanceHAP Clip » dans OBS,
 pointer vers un .mov HAP, et voir la vidéo + entendre l'audio en synchro.
