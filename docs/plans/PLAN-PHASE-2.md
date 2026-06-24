@@ -94,20 +94,30 @@ CI, et documenter l'install locale pour dév.
 utiliser le mode `static` (single frame) d'abord, puis ajouter le recurrent
 mode en 2.2.b si perf le permet.
 
-### Étape 2.3 — GPU providers (CUDA / DirectML / CoreML)
+### Étape 2.3 — GPU providers (DirectML Windows + CoreML macOS)
 
 **Livrables** :
-- Détection automatique du provider disponible (CUDA > DirectML > CoreML > CPU)
+- Détection automatique du provider disponible (DirectML > CoreML > CPU)
+- Session options ONNX Runtime avec `OrtSessionOptionsAppendExecutionProvider_DML`
+  (Windows) ou `OrtSessionOptionsAppendExecutionProvider_CoreML` (macOS)
 - Properties UI : choix provider (Auto / Forcer CPU)
 - Warning UI si CPU seul (« Mode dégradé — utilisez un GPU pour 60fps »)
-- Benchmark FPS dans le log OBS au démarrage
+- Benchmark FPS dans le log OBS au démarrant
+
+**Décision ADR-003 (révision 2026-06-24)** : CUDA est retiré au profit de
+DirectML comme provider Windows unique. DirectML couvre tous les GPU Windows
+(Nvidia + AMD + Intel) via DirectX 12, sans dépendance CUDA toolkit (~3 Go).
+Vulkan EP rejeté (expérimental, ops manquantes pour RVM).
 
 **Tests** :
-- Stub : provider selection logic (enum, fallback chain)
-- CI : build avec provider conditionnel (ne link CUDA sur macOS, etc.)
+- Stub : provider selection logic (enum, fallback chain DirectML→CPU, CoreML→CPU)
+- CI : build avec provider conditionnel (DirectML sur Windows, CoreML sur macOS)
 
-**Risque R-GPU-1** : CUDA toolkit en CI = lourd. Mitigation : CI build CPU-only,
-smoke test GPU sur Hephaistos (Jean-Luc).
+**Risque R-GPU-1** : CUDA toolkit en CI = lourd. **Résolu** : plus de CUDA,
+DirectML.dll (~5 Mo) via NuGet, CoreML built-in macOS.
+**Risque R-DML-1** : DirectML EP peut avoir des ops manquantes sur certains
+modèles. Mitigation : RVM MobileNetV3 n'utilise que des ops standard, validé
+par la communauté.
 
 ### Étape 2.4 — MediaPipe fallback
 

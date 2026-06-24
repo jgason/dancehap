@@ -22,9 +22,9 @@ fallback acceptable pour configs légères (CPU, GPU intégré).
 
 **Modèle primaire : RVM (Robust Video Matting)** via ONNX Runtime, avec
 execution providers conditionnels :
-- CUDA sur Windows/Nvidia
-- DirectML sur Windows/AMD ou GPU intégré
-- CoreML sur macOS (via ONNX EP CoreML)
+- **DirectML sur Windows (tous GPU)** — Nvidia, AMD et Intel iGPU via DirectX 12.
+  Un seul binaire couvre tout l'écosystème Windows, sans dépendance CUDA.
+- CoreML sur macOS (via ONNX EP CoreML, Metal)
 - CPU en dernier recours (warning UI)
 
 **Fallback : MediaPipe Selfie Segmentation** pour :
@@ -33,6 +33,29 @@ execution providers conditionnels :
 - Si l'utilisateur choisit explicitement
 
 L'utilisateur peut forcer le modèle via l'UI du filtre (`ai_matte_filter`).
+
+### Rationale du pivot CUDA → DirectML (révision 2026-06-24)
+
+La décision initiale listait CUDA (Nvidia), DirectML (AMD/Intel), CoreML (macOS).
+Après analyse, **CUDA est retiré** au profit de DirectML comme provider Windows
+unique :
+
+- **Couverture GPU** : DirectML couvre Nvidia + AMD + Intel via DirectX 12.
+  CUDA ne couvre que Nvidia → verrouillerait les users AMD/Intel.
+- **Setup/distribution** : DirectML.dll (~5 Mo, NuGet `Microsoft.ML.OnnxRuntime.DirectML`)
+  vs CUDA Toolkit 12 (~3 Go, version-locked, lourd à bundler en CI).
+- **Maturité RVM** : RVM MobileNetV3 n'utilise que des ops standard (conv2d,
+  batchnorm, relu, upsampling) parfaitement supportées par DirectML. Validé par
+  la communauté RVM et par Stable Diffusion (qui tourne sur DirectML en prod).
+- **Perf** : DirectML atteint 40-60 fps sur RVM @1080p (vs 60+ pour CUDA).
+  Le delta de perf ne justifie pas le coût de distribution de CUDA pour un
+  plugin OBS grand public.
+- **Vulkan EP** : envisagé mais rejeté — expérimental, ops manquantes pour RVM,
+  pas mature en 2026.
+
+**CUDA n'est rejeté que pour la distribution**. Un utilisateur avancé peut
+toujours rebuilder le plugin avec `DANCEHAP_HAVE_CUDA` s'il veut la perf max
+sur sa machine Nvidia, mais le binaire officiel n'inclura pas CUDA.
 
 ## Conséquences
 

@@ -134,4 +134,48 @@ TEST(MatteEngineTest, PostprocessResizesMask)
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Provider resolution (Phase 2.3)
+// ---------------------------------------------------------------------------
+
+TEST(MatteEngineTest, ResolveProviderAutoReturnsPlatformDefault)
+{
+    ActiveProvider ap = resolve_provider(ExecutionProvider::Auto);
+#if defined(_WIN32)
+    EXPECT_EQ(ap, ActiveProvider::DirectML);
+#elif defined(__APPLE__)
+    EXPECT_EQ(ap, ActiveProvider::CoreML);
+#else
+    EXPECT_EQ(ap, ActiveProvider::CPU);
+#endif
+}
+
+TEST(MatteEngineTest, ResolveProviderCPUAlwaysCPU)
+{
+    EXPECT_EQ(resolve_provider(ExecutionProvider::CPU), ActiveProvider::CPU);
+}
+
+TEST(MatteEngineTest, ResolveProviderDirectMLWindowsOnly)
+{
+    ActiveProvider ap = resolve_provider(ExecutionProvider::DirectML);
+#if defined(_WIN32)
+    EXPECT_EQ(ap, ActiveProvider::DirectML);
+#else
+    // DirectML not available on non-Windows → CPU.
+    EXPECT_EQ(ap, ActiveProvider::CPU);
+#endif
+}
+
+TEST(MatteEngineTest, ResolveProviderCoreMLMacOSOnly)
+{
+    ActiveProvider ap = resolve_provider(ExecutionProvider::CoreML);
+#if defined(__APPLE__)
+    EXPECT_EQ(ap, ActiveProvider::CoreML);
+#else
+    // CoreML not available on non-macOS → CPU.
+    EXPECT_EQ(ap, ActiveProvider::CPU);
+#endif
+}
+
 } // namespace dancehap
