@@ -139,26 +139,24 @@ jobs:
             -o onnxruntime/ort.nupkg
           cd onnxruntime
           unzip -q ort.nupkg
-          # Locate headers + import lib + runtime DLL.
+          # Locate headers + x64 import lib + runtime DLL.
+          # The NuGet has win-arm64, win-x64, win-x86 — must pick x64 explicitly.
           echo "=== Headers ==="
           ls -la build/native/include/onnxruntime_c_api.h
           echo "=== Find import lib (.lib) ==="
           find . -name "onnxruntime.lib" -type f
           echo "=== Find runtime DLL ==="
           find . -name "onnxruntime.dll" -type f
-          # Verify DirectML symbol is exported from the DLL.
-          echo "=== Verify DML symbol in lib ==="
-          ORT_LIB=$(find . -name "onnxruntime.lib" -path "*/win10/*" -o -name "onnxruntime.lib" -path "*/x64/*" | head -1)
-          if [ -z "$ORT_LIB" ]; then
-            ORT_LIB=$(find . -name "onnxruntime.lib" -type f | head -1)
+          # Force win-x64 (the runner is x64). ARM64/x86 are wrong arch.
+          ORT_LIB="./runtimes/win-x64/native/onnxruntime.lib"
+          if [ ! -f "$ORT_LIB" ]; then
+            echo "ERROR: win-x64 onnxruntime.lib not found"; exit 1
           fi
           echo "ORT_LIB=$ORT_LIB"
-          if command -v dumpbin &>/dev/null; then
-            dumpbin /symbols "$ORT_LIB" 2>/dev/null | grep -i "DirectML" | head -3
-          fi
           # Save paths for the configure step.
           echo "ORT_INCLUDE=$PWD/build/native/include" >> $GITHUB_ENV
-          echo "ORT_LIB_ABS=$PWD/$ORT_LIB" >> $GITHUB_ENV
+          # Resolve to absolute path.
+          echo "ORT_LIB_ABS=$(cd "$(dirname "$ORT_LIB")" && pwd)/$(basename "$ORT_LIB")" >> $GITHUB_ENV
 
       - name: Configure plugin (with OBS deps)
         shell: bash
