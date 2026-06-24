@@ -28,6 +28,7 @@ add_executable(dancehap_unit_tests
     unit/test_hap_demuxer.cpp
     unit/test_hap_decoder.cpp
     unit/test_clip_player.cpp
+    unit/test_ai_matte_filter.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
