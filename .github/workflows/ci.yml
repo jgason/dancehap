@@ -139,10 +139,26 @@ jobs:
             -o onnxruntime/ort.nupkg
           cd onnxruntime
           unzip -q ort.nupkg
-          # Headers: build/native/include/
-          # Lib: runtimes/win-x64/native/onnxruntime.dll + onnxruntime.lib
+          # Locate headers + import lib + runtime DLL.
+          echo "=== Headers ==="
           ls -la build/native/include/onnxruntime_c_api.h
-          ls -la runtimes/win-x64/native/
+          echo "=== Find import lib (.lib) ==="
+          find . -name "onnxruntime.lib" -type f
+          echo "=== Find runtime DLL ==="
+          find . -name "onnxruntime.dll" -type f
+          # Verify DirectML symbol is exported from the DLL.
+          echo "=== Verify DML symbol in lib ==="
+          ORT_LIB=$(find . -name "onnxruntime.lib" -path "*/win10/*" -o -name "onnxruntime.lib" -path "*/x64/*" | head -1)
+          if [ -z "$ORT_LIB" ]; then
+            ORT_LIB=$(find . -name "onnxruntime.lib" -type f | head -1)
+          fi
+          echo "ORT_LIB=$ORT_LIB"
+          if command -v dumpbin &>/dev/null; then
+            dumpbin /symbols "$ORT_LIB" 2>/dev/null | grep -i "DirectML" | head -3
+          fi
+          # Save paths for the configure step.
+          echo "ORT_INCLUDE=$PWD/build/native/include" >> $GITHUB_ENV
+          echo "ORT_LIB_ABS=$PWD/$ORT_LIB" >> $GITHUB_ENV
 
       - name: Configure plugin (with OBS deps)
         shell: bash
@@ -154,8 +170,8 @@ jobs:
             EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
             # ONNX Runtime DirectML (Windows only).
             EXTRA_ARGS="$EXTRA_ARGS -DDANCEHAP_WITH_ONNXRUNTIME=ON"
-            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_INCLUDE_DIRS=$PWD/onnxruntime/build/native/include"
-            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_LIBRARIES=$PWD/onnxruntime/runtimes/win-x64/native/onnxruntime.lib"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_INCLUDE_DIRS=$ORT_INCLUDE"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_LIBRARIES=$ORT_LIB_ABS"
           fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
@@ -202,8 +218,13 @@ jobs:
           Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
           # Bundle onnxruntime.dll (Phase 2.3 DirectML) next to the plugin.
           # OBS needs it at load time; deploy copies both to the plugins dir.
-          Copy-Item onnxruntime\runtimes\win-x64\native\onnxruntime.dll -Destination build\artifact\onnxruntime.dll
-          Write-Host "onnxruntime.dll bundled for DirectML"
+          $ortDll = Get-ChildItem -Path onnxruntime -Recurse -Filter 'onnxruntime.dll' | Select-Object -First 1
+          if ($ortDll) {
+            Copy-Item $ortDll.FullName -Destination build\artifact\onnxruntime.dll
+            Write-Host "onnxruntime.dll bundled for DirectML (from $($ortDll.FullName))"
+          } else {
+            Write-Host "WARN: onnxruntime.dll not found — plugin may fail to load"
+          }
 
       - name: Locate built plugin (macOS)
         if: runner.os == 'macOS'
