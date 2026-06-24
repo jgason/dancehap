@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.4.4
+    VERSION 0.4.5
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )

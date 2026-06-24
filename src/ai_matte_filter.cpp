@@ -71,7 +71,8 @@ namespace {
 struct ai_matte_context {
     bool active = false;
     bool matte_enabled = false;       // user toggle (Phase 2.5 properties)
-    std::string model_path;           // ONNX model path
+    std::string model_path;           // ONNX model path (current setting)
+    std::string loaded_model_path;    // ONNX model path (actually loaded)
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
     dancehap::MatteEngine engine;     // matting inference engine
@@ -117,22 +118,101 @@ void ai_matte_destroy(void *data)
 void ai_matte_get_defaults(obs_data_t *settings)
 {
     if (!settings) return;
-    // Phase 2.0: no settings yet. Phase 2.2 will add "enable_matte" toggle.
+    obs_data_set_default_bool(settings, "matte_enable", false);
+    obs_data_set_default_string(settings, "matte_model_path", "");
+    obs_data_set_default_int(settings, "matte_provider", 0);  // Auto
+    obs_data_set_default_int(settings, "matte_quality", 1);   // Balanced
 }
 
 obs_properties_t *ai_matte_get_properties(void * /*data*/)
 {
     obs_properties_t *props = obs_properties_create();
-    // Phase 2.0: no properties yet. Phase 2.2/2.5 will add model selection,
-    // quality, softness, etc.
+
+    // Enable toggle.
+    obs_properties_add_bool(props, "matte_enable",
+        obs_module_text("DanceHAP.Matte.Enable"));
+
+    // Model path (.onnx file).
+    obs_properties_add_path(props, "matte_model_path",
+        obs_module_text("DanceHAP.Matte.ModelPath"),
+        OBS_PATH_FILE, "ONNX model (*.onnx)", nullptr);
+
+    // Execution provider.
+    obs_property_t *prop_prov = obs_properties_add_list(props,
+        "matte_provider",
+        obs_module_text("DanceHAP.Matte.Provider"),
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_list_add_int(prop_prov,
+        obs_module_text("DanceHAP.Matte.Provider.Auto"), 0);
+    obs_property_list_add_int(prop_prov,
+        obs_module_text("DanceHAP.Matte.Provider.DirectML"), 1);
+    obs_property_list_add_int(prop_prov,
+        obs_module_text("DanceHAP.Matte.Provider.CoreML"), 2);
+    obs_property_list_add_int(prop_prov,
+        obs_module_text("DanceHAP.Matte.Provider.CPU"), 3);
+
+    // Quality (internal resolution).
+    obs_property_t *prop_qual = obs_properties_add_list(props,
+        "matte_quality",
+        obs_module_text("DanceHAP.Matte.Quality"),
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_list_add_int(prop_qual,
+        obs_module_text("DanceHAP.Matte.Quality.Performance"), 0);  // 192px
+    obs_property_list_add_int(prop_qual,
+        obs_module_text("DanceHAP.Matte.Quality.Balanced"), 1);    // 256px
+    obs_property_list_add_int(prop_qual,
+        obs_module_text("DanceHAP.Matte.Quality.High"), 2);        // 512px
+
     return props;
 }
 
-void ai_matte_update(void *data, obs_data_t * /*settings*/)
+void ai_matte_update(void *data, obs_data_t *settings)
 {
     auto *ctx = static_cast<ai_matte_context *>(data);
     if (!ctx) return;
-    // Phase 2.0: no settings to apply yet.
+
+    bool enable = obs_data_get_bool(settings, "matte_enable");
+    const char *model = obs_data_get_string(settings, "matte_model_path");
+    int provider = static_cast<int>(obs_data_get_int(settings, "matte_provider"));
+    int quality  = static_cast<int>(obs_data_get_int(settings, "matte_quality"));
+
+    ctx->matte_enabled = enable;
+    ctx->model_path = model ? model : "";
+
+    // Map quality index → internal resolution.
+    int res = (quality == 0) ? 192 : (quality == 2) ? 512 : 256;
+
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    // Update engine config.
+    dancehap::MatteModelConfig cfg;
+    cfg.input_width  = res;
+    cfg.input_height = res;
+    ctx->engine.setConfig(cfg);
+
+    dancehap::ExecutionProvider ep =
+        (provider == 1) ? dancehap::ExecutionProvider::DirectML :
+        (provider == 2) ? dancehap::ExecutionProvider::CoreML :
+        (provider == 3) ? dancehap::ExecutionProvider::CPU :
+                          dancehap::ExecutionProvider::Auto;
+    ctx->engine.setDesiredProvider(ep);
+
+    // (Re)load model if enabled and path changed.
+    if (enable && !ctx->model_path.empty()) {
+        if (!ctx->engine.isReady() || ctx->model_path != ctx->loaded_model_path) {
+            if (!ctx->engine.loadModel(ctx->model_path)) {
+                blog(LOG_WARNING, "[DanceHAP] MatteEngine: failed to load '%s'",
+                     ctx->model_path.c_str());
+                ctx->matte_enabled = false;
+            } else {
+                ctx->loaded_model_path = ctx->model_path;
+            }
+        }
+    }
+    // Disable engine if matte toggled off or path cleared.
+    if (!enable && ctx->engine.isReady()) {
+        // Engine stays loaded but matte_enabled=false → video_tick skips it.
+    }
+#endif
 }
 
 void ai_matte_video_tick(void *data, float /*seconds*/)

@@ -106,6 +106,25 @@ enum obs_path_type {
     OBS_PATH_DIRECTORY,
 };
 
+// Combo types and formats for obs_properties_add_list (matches OBS obs-properties.h)
+enum obs_combo_type {
+    OBS_COMBO_TYPE_INVALID,
+    OBS_COMBO_TYPE_EDITABLE,
+    OBS_COMBO_TYPE_LIST,
+};
+
+enum obs_combo_format {
+    OBS_COMBO_FORMAT_INVALID,
+    OBS_COMBO_FORMAT_INT,
+    OBS_COMBO_FORMAT_FLOAT,
+    OBS_COMBO_FORMAT_STRING,
+    OBS_COMBO_FORMAT_BOOL,
+};
+
+// obs_property is opaque in real OBS; stub uses a lightweight stand-in.
+struct obs_property;
+typedef struct obs_property obs_property_t;
+
 // ---- Flags (matching OBS obs-source.h 31.x) ------------------------------
 
 #define OBS_SOURCE_VIDEO             (1u << 0)
@@ -183,6 +202,16 @@ obs_properties_t *obs_properties_add_int(obs_properties_t *props,
                                          const char *name,
                                          const char *description,
                                          int min_val, int max_val, int step_val);
+obs_property_t *obs_properties_add_list(obs_properties_t *props,
+                                        const char *name,
+                                        const char *description,
+                                        enum obs_combo_type type,
+                                        enum obs_combo_format format);
+void obs_property_list_add_int(obs_property_t *prop,
+                               const char *name, long long val);
+
+// i18n (stub: returns key as-is)
+const char *obs_module_text(const char *key);
 
 // Source registration
 void obs_register_source_s(const struct obs_source_info *info, std::size_t size);

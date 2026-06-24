@@ -153,6 +153,36 @@ obs_properties_t *obs_properties_add_int(obs_properties_t *props,
     return props;
 }
 
+// obs_properties_add_list — stub returns props (property tracking is minimal).
+obs_property_t *obs_properties_add_list(obs_properties_t *props,
+                                         const char *name,
+                                         const char *description,
+                                         enum obs_combo_type /*type*/,
+                                         enum obs_combo_format /*format*/)
+{
+    if (!props || !name) return nullptr;
+    obs_properties::property p;
+    p.name = name;
+    p.description = description ? description : "";
+    p.kind = "list";
+    props->props.push_back(std::move(p));
+    // Return a dummy non-null pointer (the last property address suffices).
+    return reinterpret_cast<obs_property_t *>(&props->props.back());
+}
+
+// obs_property_list_add_int — stub no-op (returns the property).
+void obs_property_list_add_int(obs_property_t * /*prop*/,
+                                const char * /*name*/, long long /*val*/)
+{
+    // Stub: no-op. Real OBS appends an entry; we don't track in stub.
+}
+
+// obs_module_text — stub returns the key as-is (no i18n in stub mode).
+const char *obs_module_text(const char *key)
+{
+    return key ? key : "";
+}
+
 // ---------------------------------------------------------------------------
 // Source registration stub
 // ---------------------------------------------------------------------------
