@@ -11,6 +11,7 @@
 // HapDemuxer and HapDecoder handle the stub/real split internally.
 
 #include "clip_player.hpp"
+#include "audio_decoder.hpp"
 #include "hap_decoder.hpp"
 #include "hap_demuxer.hpp"
 #include "obs_compat.hpp"  // blog()
@@ -28,6 +29,7 @@ struct ClipPlayer::Impl {
     // Owned resources
     std::unique_ptr<HapDemuxer>  demuxer;
     std::unique_ptr<HapDecoder>  decoder;
+    std::unique_ptr<AudioDecoder> audio_decoder;
 
     // Configuration
     bool    loop              = true;
@@ -47,6 +49,10 @@ struct ClipPlayer::Impl {
 
     // Audio cursor (tracks how much audio has been pulled, in microseconds)
     int64_t audio_read_us     = 0;
+
+    // Audio sample buffer: accumulate decoded samples from multiple packets
+    // to satisfy pullAudio requests that may span several packets.
+    std::vector<float> audio_buffer;
 
     // Max frames to decode per tick to avoid catch-up storms.
     static constexpr int MAX_DECODE_PER_TICK = 5;
@@ -102,10 +108,14 @@ struct ClipPlayer::Impl {
             // Reopen the demuxer to restart from the beginning.
             if (demuxer->reopen(loaded_path)) {
                 decoder->setVideoInfo(demuxer->getVideoInfo());
+                if (audio_decoder && demuxer->hasAudio()) {
+                    audio_decoder->init(demuxer->getAudioInfo());
+                }
                 master_clock_us   = 0;
                 next_video_pts_us = 0;
                 frame_count       = 0;
                 audio_read_us     = 0;
+                audio_buffer.clear();
                 blog(LOG_INFO, "[DanceHAP] ClipPlayer loop #%d (reopen '%s')",
                      loop_count, loaded_path.c_str());
                 // Remain in Playing — next tick resumes decoding.
@@ -143,6 +153,7 @@ bool ClipPlayer::load(const std::string &path)
     // (Re)create the demuxer + decoder fresh.
     pimpl_->demuxer = std::make_unique<HapDemuxer>();
     pimpl_->decoder = std::make_unique<HapDecoder>();
+    pimpl_->audio_decoder = std::make_unique<AudioDecoder>();
 
     if (!pimpl_->demuxer->open(path)) {
         pimpl_->last_error = pimpl_->demuxer->getLastError();
@@ -155,6 +166,13 @@ bool ClipPlayer::load(const std::string &path)
     // Configure decoder with video info from the demuxer.
     pimpl_->decoder->setVideoInfo(pimpl_->demuxer->getVideoInfo());
 
+    // Initialize audio decoder if audio stream exists.
+    if (pimpl_->demuxer->hasAudio()) {
+        if (!pimpl_->audio_decoder->init(pimpl_->demuxer->getAudioInfo())) {
+            blog(LOG_WARNING, "[DanceHAP] ClipPlayer::load — audio decoder init failed");
+        }
+    }
+
     // Reset timing + counters.
     pimpl_->loaded_path     = path;
     pimpl_->master_clock_us = 0;
@@ -162,6 +180,7 @@ bool ClipPlayer::load(const std::string &path)
     pimpl_->frame_count     = 0;
     pimpl_->loop_count      = 0;
     pimpl_->audio_read_us   = 0;
+    pimpl_->audio_buffer.clear();
     pimpl_->state           = PlayerState::Playing;
 
     blog(LOG_INFO, "[DanceHAP] ClipPlayer loaded '%s' — %s %dx%d %d/%d fps "
@@ -198,6 +217,7 @@ void ClipPlayer::stop()
 {
     pimpl_->demuxer.reset();
     pimpl_->decoder.reset();
+    pimpl_->audio_decoder.reset();
     pimpl_->loaded_path.clear();
     pimpl_->last_error.clear();
     pimpl_->master_clock_us   = 0;
@@ -205,6 +225,7 @@ void ClipPlayer::stop()
     pimpl_->frame_count       = 0;
     pimpl_->loop_count        = 0;
     pimpl_->audio_read_us     = 0;
+    pimpl_->audio_buffer.clear();
     pimpl_->state             = PlayerState::Idle;
 }
 
@@ -245,6 +266,7 @@ AudioOutput ClipPlayer::pullAudio(int64_t max_duration_us)
 
     if (pimpl_->state != PlayerState::Playing) return out;
     if (!pimpl_->demuxer || !pimpl_->demuxer->hasAudio()) return out;
+    if (!pimpl_->audio_decoder || !pimpl_->audio_decoder->isReady()) return out;
     if (max_duration_us <= 0) return out;
 
     const auto &ai = pimpl_->demuxer->getAudioInfo();
@@ -262,6 +284,9 @@ AudioOutput ClipPlayer::pullAudio(int64_t max_duration_us)
             pimpl_->audio_read_us = 0;
             out.pts_us = 0;
             remaining = ai.duration_us;
+            // Reset audio decoder state for the new loop.
+            pimpl_->audio_decoder->init(ai);
+            pimpl_->audio_buffer.clear();
         } else {
             // No more audio — return silence.
             return out;
@@ -271,17 +296,50 @@ AudioOutput ClipPlayer::pullAudio(int64_t max_duration_us)
     int64_t produce_us = std::min(max_duration_us, remaining);
 
     // Convert microseconds to audio frames at the sample rate.
-    int frames = static_cast<int>(
+    int frames_needed = static_cast<int>(
         produce_us * ai.sample_rate / 1'000'000LL);
-    if (frames <= 0) return out;
+    if (frames_needed <= 0) return out;
 
     // Recompute exact duration from frame count (avoids drift).
-    out.frames      = frames;
-    out.duration_us = static_cast<int64_t>(frames) * 1'000'000LL / ai.sample_rate;
-    out.samples.assign(
-        static_cast<size_t>(frames) * ai.channels, 0.0f);  // silence
-    out.valid = true;
+    out.frames      = frames_needed;
+    out.duration_us = static_cast<int64_t>(frames_needed) * 1'000'000LL / ai.sample_rate;
 
+    // Decode audio packets from the demuxer to fill the request.
+    // We accumulate decoded samples in audio_buffer until we have enough.
+    const int channels = ai.channels;
+    const size_t samples_needed = static_cast<size_t>(frames_needed) * channels;
+
+    // Consume packets until we have enough samples in the buffer.
+    while (pimpl_->audio_buffer.size() < samples_needed) {
+        DemuxPacket pkt = pimpl_->demuxer->readNextAudioPacket();
+        if (!pkt.valid) {
+            // EOF: no more audio packets.
+            break;
+        }
+        auto decoded = pimpl_->audio_decoder->decode(pkt);
+        pimpl_->audio_buffer.insert(
+            pimpl_->audio_buffer.end(), decoded.begin(), decoded.end());
+    }
+
+    // Fill out.samples from the buffer.
+    if (pimpl_->audio_buffer.size() >= samples_needed) {
+        out.samples.assign(
+            pimpl_->audio_buffer.begin(),
+            pimpl_->audio_buffer.begin() + samples_needed);
+        pimpl_->audio_buffer.erase(
+            pimpl_->audio_buffer.begin(),
+            pimpl_->audio_buffer.begin() + samples_needed);
+    } else if (!pimpl_->audio_buffer.empty()) {
+        // Not enough decoded samples — use what we have, pad with silence.
+        out.samples = std::move(pimpl_->audio_buffer);
+        out.samples.resize(samples_needed, 0.0f);
+        pimpl_->audio_buffer.clear();
+    } else {
+        // No samples decoded at all — fall back to silence.
+        out.samples.assign(samples_needed, 0.0f);
+    }
+
+    out.valid = true;
     pimpl_->audio_read_us += out.duration_us;
     return out;
 }
