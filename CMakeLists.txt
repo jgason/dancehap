@@ -148,6 +148,7 @@ set(DANCEHAP_SOURCES
     src/plugin.cpp
     src/hap_clip_source.cpp
     src/ai_matte_filter.cpp
+    src/matte_engine.cpp
     src/hap_demuxer.cpp
     src/hap_decoder.cpp
     src/audio_decoder.cpp
