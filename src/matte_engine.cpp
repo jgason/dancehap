@@ -183,6 +183,10 @@ ActiveProvider resolve_provider(ExecutionProvider desired)
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
 
 #include <onnxruntime_c_api.h>
+// DirectML/CoreML EP factory headers (standalone C functions, not in OrtApi).
+#if defined(_WIN32)
+#include <dml_provider_factory.h>
+#endif
 
 namespace dancehap {
 
@@ -267,10 +271,7 @@ bool MatteEngine::loadModel(const std::string &model_path)
 
 #if defined(_WIN32)
     if (ap == ActiveProvider::DirectML) {
-        // DirectML EP: standalone C function (not an OrtApi member).
-        // Declared in onnxruntime_c_api.h when DirectML is compiled in.
-        extern OrtStatus *OrtSessionOptionsAppendExecutionProvider_DML(
-            OrtSessionOptions *options, int device_id);
+        // DirectML EP: standalone C function from dml_provider_factory.h.
         st = OrtSessionOptionsAppendExecutionProvider_DML(opts, 0);
         if (st) {
             blog(LOG_WARNING, "[DanceHAP] MatteEngine: DirectML EP failed, falling back to CPU");
@@ -282,8 +283,10 @@ bool MatteEngine::loadModel(const std::string &model_path)
     }
 #elif defined(__APPLE__)
     if (ap == ActiveProvider::CoreML) {
-        // CoreML EP: standalone C function.
-        extern OrtStatus *OrtSessionOptionsAppendExecutionProvider_CoreML(
+        // CoreML EP: standalone C function (declared in coreml_provider_factory.h
+        // from the Microsoft.ML.OnnxRuntime.CoreML NuGet).
+        // We declare it locally since the macOS CI doesn't download that NuGet yet.
+        extern "C" OrtStatus *OrtSessionOptionsAppendExecutionProvider_CoreML(
             OrtSessionOptions *options, uint32_t flags);
         st = OrtSessionOptionsAppendExecutionProvider_CoreML(opts, 1);
         if (st) {
