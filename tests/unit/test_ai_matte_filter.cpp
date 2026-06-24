@@ -75,3 +75,60 @@ TEST_F(AiMatteFilterTest, PassThroughReturnsInput)
     const uint8_t *out_bytes = static_cast<const uint8_t *>(output_ptr);
     EXPECT_EQ(0, std::memcmp(out_bytes, input.data(), input.size()));
 }
+// ===========================================================================
+// Alpha mask application (Phase 2.2 integration)
+// ===========================================================================
+
+TEST(AiMatteMaskApplyTest, FullOpacityMaskKeepsAlpha)
+{
+    // BGRA frame with alpha=255, mask all 1.0 → alpha stays 255.
+    std::vector<uint8_t> bgra = {10, 20, 30, 255,  40, 50, 60, 255};
+    std::vector<float> mask = {1.0f, 1.0f};
+
+    auto out = dancehap::apply_alpha_mask_to_bgra(bgra.data(), 2, 1, mask);
+    ASSERT_EQ(out.size(), bgra.size());
+    EXPECT_EQ(out[3], 255);  // alpha unchanged
+    EXPECT_EQ(out[7], 255);
+}
+
+TEST(AiMatteMaskApplyTest, ZeroOpacityMaskZeroesAlpha)
+{
+    // BGRA frame with alpha=255, mask all 0.0 → alpha becomes 0.
+    std::vector<uint8_t> bgra = {10, 20, 30, 255,  40, 50, 60, 255};
+    std::vector<float> mask = {0.0f, 0.0f};
+
+    auto out = dancehap::apply_alpha_mask_to_bgra(bgra.data(), 2, 1, mask);
+    ASSERT_EQ(out.size(), bgra.size());
+    EXPECT_EQ(out[3], 0);
+    EXPECT_EQ(out[7], 0);
+}
+
+TEST(AiMatteMaskApplyTest, HalfOpacityMaskHalvesAlpha)
+{
+    // BGRA frame with alpha=255, mask 0.5 → alpha ~127.
+    std::vector<uint8_t> bgra = {10, 20, 30, 255};
+    std::vector<float> mask = {0.5f};
+
+    auto out = dancehap::apply_alpha_mask_to_bgra(bgra.data(), 1, 1, mask);
+    ASSERT_EQ(out.size(), static_cast<size_t>(4));
+    EXPECT_NEAR(out[3], 127, 1);
+    // BGR channels unchanged.
+    EXPECT_EQ(out[0], 10);
+    EXPECT_EQ(out[1], 20);
+    EXPECT_EQ(out[2], 30);
+}
+
+TEST(AiMatteMaskApplyTest, EmptyMaskPassesThrough)
+{
+    // Empty mask → pass-through (alpha unchanged).
+    std::vector<uint8_t> bgra = {10, 20, 30, 200};
+    std::vector<float> mask;  // empty
+
+    auto out = dancehap::apply_alpha_mask_to_bgra(bgra.data(), 1, 1, mask);
+    ASSERT_EQ(out.size(), static_cast<size_t>(4));
+    EXPECT_EQ(out[3], 200);  // alpha unchanged
+}
+
+// ===========================================================================
+// Alpha mask application (Phase 2.2 integration)
+// ===========================================================================
