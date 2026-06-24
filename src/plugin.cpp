@@ -19,19 +19,21 @@
 
 #include "dancehap/version.h"
 #include "hap_clip_source.hpp"
+#include "ai_matte_filter.hpp"
 
 // ---------------------------------------------------------------------------
 // Module lifecycle
 // ---------------------------------------------------------------------------
 
 /// Called by OBS when the plugin is loaded. Returns true on success.
-/// Registers the hap_clip_source (Phase 1.1).
+/// Registers the hap_clip_source (Phase 1.1) and ai_matte_filter (Phase 2.0).
 bool obs_module_load(void)
 {
 #ifdef DANCEHAP_HAVE_OBS
     blog(LOG_INFO, "[DanceHAP] module loaded (v%s)", DANCEHAP_VERSION_STRING);
 #endif
     register_hap_clip_source();
+    register_ai_matte_filter();
     return true;
 }
 
