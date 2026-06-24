@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.4.5
+    VERSION 0.4.6
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )
@@ -136,6 +136,35 @@ if(DANCEHAP_WITH_OBS_DEPS)
     endif()
 endif()
 
+# --- ONNX Runtime dependency (optional, for real matting) ------------------
+# When DANCEHAP_WITH_ONNXRUNTIME is ON, we look for the ONNX Runtime headers +
+# library. If found, the real matting implementation is compiled
+# (DANCEHAP_HAVE_ONNXRUNTIME=1); otherwise the stub is used.
+#
+# Phase 2.3 (ADR-003): DirectML on Windows (all GPU vendors via DirectX 12),
+# CoreML on macOS (Metal), CPU elsewhere. CUDA is NOT used for distribution.
+option(DANCEHAP_WITH_ONNXRUNTIME "Link against ONNX Runtime for real matting" OFF)
+set(DANCEHAP_HAVE_ONNXRUNTIME 0)
+if(DANCEHAP_WITH_ONNXRUNTIME)
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    find_package(ONNXRuntime QUIET)
+    if(ONNXRuntime_FOUND)
+        set(DANCEHAP_HAVE_ONNXRUNTIME 1)
+        set(DANCEHAP_ONNXRUNTIME_LIB ${ONNXRuntime_LIBRARIES})
+        message(STATUS "ONNX Runtime: found (inc=${ONNXRuntime_INCLUDE_DIRS})")
+        # Detect platform-specific EP suffix for logging.
+        if(WIN32)
+            message(STATUS "ONNX Runtime EP: DirectML (Windows, all GPU via DirectX 12)")
+        elseif(APPLE)
+            message(STATUS "ONNX Runtime EP: CoreML (macOS, Metal)")
+        else()
+            message(STATUS "ONNX Runtime EP: CPU (Linux/non-goal platform)")
+        endif()
+    else()
+        message(STATUS "ONNX Runtime: not found — using stub matte engine")
+    endif()
+endif()
+
 # --- Plugin object library (shared between MODULE and unit tests) -------
 # We compile plugin + hap_clip_source once into an OBJECT library so both
 # the MODULE target (the actual OBS plugin .dll/.so) and the unit-test
@@ -189,6 +218,13 @@ if(DANCEHAP_HAVE_SNAPPY)
     target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_SNAPPY_LIB})
 endif()
 
+# ONNX Runtime linking for real matte engine (only when WITH_ONNXRUNTIME + found).
+if(DANCEHAP_HAVE_ONNXRUNTIME)
+    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_ONNXRUNTIME=1)
+    target_include_directories(dancehap_objs PRIVATE ${ONNXRuntime_INCLUDE_DIRS})
+    target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_ONNXRUNTIME_LIB})
+endif()
+
 # --- Debug solid-color override ---------------------------------------------
 # When ON, the decoder uploads a solid magenta BGRA texture instead of the
 # decoded DXT5 data. Used to isolate render-path bugs from decode bugs.
@@ -229,6 +265,13 @@ if(DANCEHAP_HAVE_SNAPPY)
     target_link_libraries(dancehap PRIVATE ${DANCEHAP_SNAPPY_LIB})
 endif()
 
+# ONNX Runtime libs must also be linked into the MODULE.
+if(DANCEHAP_HAVE_ONNXRUNTIME)
+    target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_ONNXRUNTIME=1)
+    target_include_directories(dancehap PRIVATE ${ONNXRuntime_INCLUDE_DIRS})
+    target_link_libraries(dancehap PRIVATE ${DANCEHAP_ONNXRUNTIME_LIB})
+endif()
+
 # OBS plugins use no "lib" prefix and a platform-specific extension.
 set_target_properties(dancehap PROPERTIES PREFIX "")
 
@@ -265,11 +308,12 @@ endif()
 
 # --- Status summary -----------------------------------------------------
 message(STATUS "=========================================================")
-message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 1.3 hap decoder")
+message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 2 matting")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Platform     : ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
 message(STATUS "  OBS deps     : ${DANCEHAP_WITH_OBS_DEPS}")
 message(STATUS "  FFmpeg       : ${DANCEHAP_HAVE_FFMPEG}")
 message(STATUS "  Snappy       : ${DANCEHAP_HAVE_SNAPPY}")
+message(STATUS "  ONNX Runtime : ${DANCEHAP_HAVE_ONNXRUNTIME}")
 message(STATUS "  Tests        : ${DANCEHAP_BUILD_TESTS}")
 message(STATUS "=========================================================")

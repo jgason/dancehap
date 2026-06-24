@@ -127,6 +127,23 @@ jobs:
       # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
       # ==================================================================
 
+      - name: Download ONNX Runtime (Windows DirectML, Phase 2.3)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # ONNX Runtime DirectML NuGet (all GPU vendors via DirectX 12).
+          # Phase 2.3 ADR-003: CUDA retiré, DirectML = Windows provider.
+          ORT_VERSION="1.17.1"
+          mkdir -p onnxruntime
+          curl -sL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/${ORT_VERSION}" \
+            -o onnxruntime/ort.nupkg
+          cd onnxruntime
+          unzip -q ort.nupkg
+          # Headers: build/native/include/
+          # Lib: runtimes/win-x64/native/onnxruntime.dll + onnxruntime.lib
+          ls -la build/native/include/onnxruntime_c_api.h
+          ls -la runtimes/win-x64/native/
+
       - name: Configure plugin (with OBS deps)
         shell: bash
         run: |
@@ -135,6 +152,10 @@ jobs:
           EXTRA_ARGS=""
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
+            # ONNX Runtime DirectML (Windows only).
+            EXTRA_ARGS="$EXTRA_ARGS -DDANCEHAP_WITH_ONNXRUNTIME=ON"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_INCLUDE_DIRS=$PWD/onnxruntime/build/native/include"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_LIBRARIES=$PWD/onnxruntime/runtimes/win-x64/native/onnxruntime.lib"
           fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
@@ -179,6 +200,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path build\artifact | Out-Null
           Copy-Item $plugin.FullName -Destination build\artifact\dancehap.dll
           Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
+          # Bundle onnxruntime.dll (Phase 2.3 DirectML) next to the plugin.
+          # OBS needs it at load time; deploy copies both to the plugins dir.
+          Copy-Item onnxruntime\runtimes\win-x64\native\onnxruntime.dll -Destination build\artifact\onnxruntime.dll
+          Write-Host "onnxruntime.dll bundled for DirectML"
 
       - name: Locate built plugin (macOS)
         if: runner.os == 'macOS'
