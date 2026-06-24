@@ -147,8 +147,8 @@ void ai_matte_video_tick(void *data, float /*seconds*/)
     obs_source_t *target = obs_filter_get_target(ctx->source);
     if (!target) return;
 
-    // Get the latest frame from the target source.
-    obs_source_frame *frame = obs_source_get_last_frame(target);
+    // Get the latest frame from the target source (async video API).
+    obs_source_frame *frame = obs_source_get_frame(target);
     if (!frame) return;
 
     uint32_t w = frame->width;
