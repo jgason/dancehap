@@ -63,3 +63,5 @@ tests/assets/*.mp4
 *.deb
 *.rpm
 /*.AppImage
+models/
+.venv-export/
