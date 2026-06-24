@@ -20,6 +20,7 @@
 #include "hap_demuxer.hpp"
 #include "obs_compat.hpp"
 
+#include <algorithm>
 #include <string>
 
 #ifndef DANCEHAP_TEST_ASSET
@@ -243,6 +244,54 @@ TEST_F(ClipPlayerTest, AudioPtsDrivesVideoClock)
     // master_clock past next_video_pts.
     player.tick(0.0f);
     EXPECT_EQ(player.getFrameCount(), 2);
+}
+
+// ===========================================================================
+// 1.5.c — Audio decode (AAC→PCM float)
+// ===========================================================================
+
+TEST_F(ClipPlayerTest, PullAudioProducesNonSilentSamples)
+{
+    ASSERT_TRUE(player.load(DANCEHAP_TEST_ASSET));
+
+    auto audio = player.pullAudio(10'000);  // 10ms
+
+    ASSERT_TRUE(audio.valid);
+    ASSERT_FALSE(audio.samples.empty());
+
+    // In stub mode the audio decoder produces a sinusoid based on pts.
+    // At least one sample must be non-zero (non-silent).
+    bool has_nonzero = false;
+    for (float s : audio.samples) {
+        if (s != 0.0f) {
+            has_nonzero = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_nonzero) << "pullAudio returned silence — decoder not integrated";
+}
+
+TEST_F(ClipPlayerTest, PullAudioConsecutiveChunksHaveDifferentContent)
+{
+    ASSERT_TRUE(player.load(DANCEHAP_TEST_ASSET));
+
+    auto a1 = player.pullAudio(10'000);
+    auto a2 = player.pullAudio(10'000);
+
+    ASSERT_TRUE(a1.valid);
+    ASSERT_TRUE(a2.valid);
+
+    // Two consecutive 10ms chunks should have different sample content
+    // because the sine phase advances with pts.
+    bool different = false;
+    size_t n = std::min(a1.samples.size(), a2.samples.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (a1.samples[i] != a2.samples[i]) {
+            different = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(different) << "Consecutive audio chunks are identical — pts not used";
 }
 
 TEST_F(ClipPlayerTest, PullAudioAtEOFWithLoopWrapsAround)
