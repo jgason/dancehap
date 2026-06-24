@@ -52,6 +52,23 @@ struct MatteModelConfig {
     int input_height = 256;
 };
 
+/// Execution provider for ONNX Runtime inference.
+/// ADR-003 (révisé 2026-06-24): CUDA retiré, DirectML = Windows, CoreML = macOS.
+enum class ExecutionProvider {
+    Auto,       ///< Best available: DirectML (Win) → CoreML (macOS) → CPU
+    DirectML,   ///< Windows only (DirectX 12, all GPU vendors)
+    CoreML,     ///< macOS only (Metal)
+    CPU,        ///< Portable fallback (slow for RVM)
+};
+
+/// Detected provider after engine initialization.
+enum class ActiveProvider {
+    Unknown,
+    DirectML,
+    CoreML,
+    CPU,
+};
+
 // ---------------------------------------------------------------------------
 // Helpers (testable without ONNX Runtime)
 // ---------------------------------------------------------------------------
@@ -69,6 +86,14 @@ std::vector<float> preprocess_rgba_to_rgb_normalized(
 MatteMask postprocess_pha_to_mask(
     const float *pha_data, int pha_w, int pha_h,
     int out_w, int out_h);
+
+/// Resolve the actual active provider given a desired provider and the platform.
+/// ADR-003: DirectML on Windows, CoreML on macOS, CPU elsewhere.
+/// Pure logic — testable without ONNX Runtime.
+///   - ExecutionProvider::Auto → platform default (DirectML/CoreML)
+///   - DirectML requested on non-Windows → CPU (not available)
+///   - CoreML requested on non-macOS → CPU (not available)
+ActiveProvider resolve_provider(ExecutionProvider desired);
 
 // ---------------------------------------------------------------------------
 // MatteEngine
@@ -100,10 +125,18 @@ public:
     const MatteModelConfig &config() const { return config_; }
     void setConfig(const MatteModelConfig &c) { config_ = c; }
 
+    /// Get/set the desired execution provider.
+    ExecutionProvider desiredProvider() const { return provider_; }
+    void setDesiredProvider(ExecutionProvider p) { provider_ = p; }
+
+    /// Get the active provider (after loadModel). Unknown until model loaded.
+    ActiveProvider activeProvider() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> pimpl_;
     MatteModelConfig config_;
+    ExecutionProvider provider_ = ExecutionProvider::Auto;
 };
 
 } // namespace dancehap

@@ -144,6 +144,40 @@ MatteMask postprocess_pha_to_mask(
 } // namespace dancehap (helpers)
 
 // ===========================================================================
+// Provider resolution (shared, testable in stub mode)
+// ===========================================================================
+
+namespace dancehap {
+
+ActiveProvider resolve_provider(ExecutionProvider desired)
+{
+#if defined(_WIN32)
+    if (desired == ExecutionProvider::Auto ||
+        desired == ExecutionProvider::DirectML) {
+        return ActiveProvider::DirectML;
+    }
+    if (desired == ExecutionProvider::CoreML) {
+        return ActiveProvider::CPU;  // CoreML not available on Windows
+    }
+    return ActiveProvider::CPU;
+#elif defined(__APPLE__)
+    if (desired == ExecutionProvider::Auto ||
+        desired == ExecutionProvider::CoreML) {
+        return ActiveProvider::CoreML;
+    }
+    if (desired == ExecutionProvider::DirectML) {
+        return ActiveProvider::CPU;  // DirectML not available on macOS
+    }
+    return ActiveProvider::CPU;
+#else
+    // Linux and others: CPU only (ADR-001: Linux is non-goal).
+    return ActiveProvider::CPU;
+#endif
+}
+
+} // namespace dancehap
+
+// ===========================================================================
 //  Real ONNX Runtime implementation (Phase 2.2)
 // ===========================================================================
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
@@ -169,6 +203,7 @@ static bool ensure_ort()
 struct MatteEngine::Impl {
     OrtEnv     *env     = nullptr;
     OrtSession *session = nullptr;
+    ActiveProvider active = ActiveProvider::Unknown;
 
     ~Impl()
     {
@@ -180,6 +215,7 @@ struct MatteEngine::Impl {
     {
         if (session) { g_ort->ReleaseSession(session); session = nullptr; }
         if (env) { g_ort->ReleaseEnv(env); env = nullptr; }
+        active = ActiveProvider::Unknown;
     }
 };
 
@@ -216,7 +252,7 @@ bool MatteEngine::loadModel(const std::string &model_path)
         return false;
     }
 
-    // Create session options (CPU provider by default).
+    // Create session options.
     OrtSessionOptions *opts;
     st = g_ort->CreateSessionOptions(&opts);
     if (st) {
@@ -224,7 +260,45 @@ bool MatteEngine::loadModel(const std::string &model_path)
         g_ort->ReleaseStatus(st);
         return false;
     }
-    // CPU provider is default; no need to append explicitly.
+
+    // Resolve and append the execution provider (ADR-003: DirectML/CoreML/CPU).
+    ActiveProvider ap = resolve_provider(provider_);
+    bool ep_ok = false;
+
+#if defined(_WIN32)
+    if (ap == ActiveProvider::DirectML) {
+        // DirectML EP: device index 0 = default GPU.
+        // OrtSessionOptionsAppendExecutionProvider_DML is declared in
+        // onnxruntime_c_api.h when DirectML support is compiled in.
+        st = g_ort->SessionOptionsAppendExecutionProvider_DML(opts, 0);
+        if (st) {
+            blog(LOG_WARNING, "[DanceHAP] MatteEngine: DirectML EP failed, falling back to CPU");
+            g_ort->ReleaseStatus(st);
+            ap = ActiveProvider::CPU;
+        } else {
+            ep_ok = true;
+        }
+    }
+#elif defined(__APPLE__)
+    if (ap == ActiveProvider::CoreML) {
+        // CoreML EP: flag 1 = enable ANE (Apple Neural Engine).
+        st = g_ort->SessionOptionsAppendExecutionProvider_CoreML(opts, 1);
+        if (st) {
+            blog(LOG_WARNING, "[DanceHAP] MatteEngine: CoreML EP failed, falling back to CPU");
+            g_ort->ReleaseStatus(st);
+            ap = ActiveProvider::CPU;
+        } else {
+            ep_ok = true;
+        }
+    }
+#endif
+    (void)ep_ok;  // CPU is the default; no explicit append needed.
+
+    pimpl_->active = ap;
+    const char *provider_name =
+        (ap == ActiveProvider::DirectML) ? "DirectML" :
+        (ap == ActiveProvider::CoreML)   ? "CoreML"   : "CPU";
+    blog(LOG_INFO, "[DanceHAP] MatteEngine: using %s provider", provider_name);
 
     // Create session.
     st = g_ort->CreateSession(pimpl_->env, model_path.c_str(), opts,
@@ -245,6 +319,11 @@ bool MatteEngine::loadModel(const std::string &model_path)
 bool MatteEngine::isReady() const
 {
     return pimpl_->session != nullptr;
+}
+
+ActiveProvider MatteEngine::activeProvider() const
+{
+    return pimpl_->active;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +457,11 @@ bool MatteEngine::loadModel(const std::string & /*model_path*/)
 bool MatteEngine::isReady() const
 {
     return false;
+}
+
+ActiveProvider MatteEngine::activeProvider() const
+{
+    return ActiveProvider::Unknown;
 }
 
 MatteMask MatteEngine::infer(const ImageFrame & /*input*/)
