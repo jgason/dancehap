@@ -216,12 +216,13 @@ jobs:
           Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
           # Bundle onnxruntime.dll (Phase 2.3 DirectML) next to the plugin.
           # OBS needs it at load time; deploy copies both to the plugins dir.
-          $ortDll = Get-ChildItem -Path onnxruntime -Recurse -Filter 'onnxruntime.dll' | Select-Object -First 1
-          if ($ortDll) {
-            Copy-Item $ortDll.FullName -Destination build\artifact\onnxruntime.dll
-            Write-Host "onnxruntime.dll bundled for DirectML (from $($ortDll.FullName))"
+          # Force win-x64 (Get-ChildItem -Recurse picks arm64 first otherwise).
+          $ortDll = "onnxruntime\runtimes\win-x64\native\onnxruntime.dll"
+          if (Test-Path $ortDll) {
+            Copy-Item $ortDll -Destination build\artifact\onnxruntime.dll
+            Write-Host "onnxruntime.dll bundled for DirectML (win-x64)"
           } else {
-            Write-Host "WARN: onnxruntime.dll not found — plugin may fail to load"
+            Write-Host "WARN: onnxruntime.dll not found at $ortDll — plugin may fail to load"
           }
 
       - name: Locate built plugin (macOS)
