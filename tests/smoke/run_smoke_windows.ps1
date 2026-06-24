@@ -32,32 +32,21 @@ if ($size -lt 5120) {
     exit 1
 }
 
-# 2. Version check via strings (the version string is embedded in the DLL)
-$strings = & dumpbin /rawstrings $Plugin 2>$null
-if (-not $strings) {
-    # Fallback: read bytes and grep
-    $bytes = [System.IO.File]::ReadAllBytes($Plugin)
-    $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-    if ($text -match "DanceHAP Clip v(\d+\.\d+\.\d+)") {
-        Write-Host ("  Version: {0}" -f $matches[1])
-    } else {
-        Write-Host "WARN: could not extract version string" -ForegroundColor Yellow
-    }
+# 2. Version check via raw bytes (dumpbin not always in PATH)
+$bytes = [System.IO.File]::ReadAllBytes($Plugin)
+$text = [System.Text.Encoding]::ASCII.GetString($bytes)
+$verMatch = [regex]::Match($text, "DanceHAP Clip v(\d+\.\d+\.\d+)")
+if ($verMatch.Success) {
+    Write-Host ("  Version: {0}" -f $verMatch.Groups[1].Value)
 } else {
-    $ver = $strings | Select-String "DanceHAP Clip v(\d+\.\d+\.\d+)" | Select-Object -First 1
-    if ($ver) {
-        Write-Host ("  Version: {0}" -f $ver.Matches[0].Groups[1].Value)
-    } else {
-        Write-Host "WARN: version string not found in DLL" -ForegroundColor Yellow
-    }
+    Write-Host "WARN: could not extract version string" -ForegroundColor Yellow
 }
 
-# 3. OBS entry point symbol
-$exports = & dumpbin /exports $Plugin 2>$null
-if ($exports -match "obs_module_load") {
-    Write-Host "  obs_module_load: exported"
+# 3. OBS entry point symbol (best-effort via raw bytes)
+if ($text -match "obs_module_load") {
+    Write-Host "  obs_module_load: found in binary"
 } else {
-    Write-Host "WARN: obs_module_load not visible in exports (may be hidden)" -ForegroundColor Yellow
+    Write-Host "WARN: obs_module_load not visible (may be hidden by visibility)" -ForegroundColor Yellow
 }
 
 # 4. Asset check
