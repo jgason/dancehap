@@ -183,6 +183,10 @@ ActiveProvider resolve_provider(ExecutionProvider desired)
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
 
 #include <onnxruntime_c_api.h>
+// DirectML/CoreML EP factory headers (standalone C functions, not in OrtApi).
+#if defined(_WIN32)
+#include <dml_provider_factory.h>
+#endif
 
 namespace dancehap {
 
@@ -267,10 +271,8 @@ bool MatteEngine::loadModel(const std::string &model_path)
 
 #if defined(_WIN32)
     if (ap == ActiveProvider::DirectML) {
-        // DirectML EP: device index 0 = default GPU.
-        // OrtSessionOptionsAppendExecutionProvider_DML is declared in
-        // onnxruntime_c_api.h when DirectML support is compiled in.
-        st = g_ort->SessionOptionsAppendExecutionProvider_DML(opts, 0);
+        // DirectML EP: standalone C function from dml_provider_factory.h.
+        st = OrtSessionOptionsAppendExecutionProvider_DML(opts, 0);
         if (st) {
             blog(LOG_WARNING, "[DanceHAP] MatteEngine: DirectML EP failed, falling back to CPU");
             g_ort->ReleaseStatus(st);
@@ -281,8 +283,12 @@ bool MatteEngine::loadModel(const std::string &model_path)
     }
 #elif defined(__APPLE__)
     if (ap == ActiveProvider::CoreML) {
-        // CoreML EP: flag 1 = enable ANE (Apple Neural Engine).
-        st = g_ort->SessionOptionsAppendExecutionProvider_CoreML(opts, 1);
+        // CoreML EP: standalone C function (declared in coreml_provider_factory.h
+        // from the Microsoft.ML.OnnxRuntime.CoreML NuGet).
+        // We declare it locally since the macOS CI doesn't download that NuGet yet.
+        extern "C" OrtStatus *OrtSessionOptionsAppendExecutionProvider_CoreML(
+            OrtSessionOptions *options, uint32_t flags);
+        st = OrtSessionOptionsAppendExecutionProvider_CoreML(opts, 1);
         if (st) {
             blog(LOG_WARNING, "[DanceHAP] MatteEngine: CoreML EP failed, falling back to CPU");
             g_ort->ReleaseStatus(st);
@@ -300,9 +306,16 @@ bool MatteEngine::loadModel(const std::string &model_path)
         (ap == ActiveProvider::CoreML)   ? "CoreML"   : "CPU";
     blog(LOG_INFO, "[DanceHAP] MatteEngine: using %s provider", provider_name);
 
-    // Create session.
-    st = g_ort->CreateSession(pimpl_->env, model_path.c_str(), opts,
-                              &pimpl_->session);
+    // Create session. On Windows, CreateSession expects a wchar_t* path.
+    st =
+#if defined(_WIN32)
+        g_ort->CreateSession(pimpl_->env,
+            std::wstring(model_path.begin(), model_path.end()).c_str(),
+            opts, &pimpl_->session);
+#else
+        g_ort->CreateSession(pimpl_->env, model_path.c_str(), opts,
+            &pimpl_->session);
+#endif
     g_ort->ReleaseSessionOptions(opts);
     if (st) {
         const char *msg = g_ort->GetErrorMessage(st);
@@ -402,7 +415,7 @@ MatteMask MatteEngine::infer(const ImageFrame &input)
     g_ort->GetDimensionsCount(pha_info, &dim_count);
     int64_t dims[4] = {0, 0, 0, 0};
     if (dim_count <= 4) {
-        g_ort->GetDimensionsShape(pha_info, dims, dim_count);
+        g_ort->GetDimensions(pha_info, dims, dim_count);
     }
     g_ort->ReleaseTensorTypeAndShapeInfo(pha_info);
 

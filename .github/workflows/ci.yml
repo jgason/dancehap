@@ -127,6 +127,37 @@ jobs:
       # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
       # ==================================================================
 
+      - name: Download ONNX Runtime (Windows DirectML, Phase 2.3)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # ONNX Runtime DirectML NuGet (all GPU vendors via DirectX 12).
+          # Phase 2.3 ADR-003: CUDA retiré, DirectML = Windows provider.
+          ORT_VERSION="1.17.1"
+          mkdir -p onnxruntime
+          curl -sL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/${ORT_VERSION}" \
+            -o onnxruntime/ort.nupkg
+          cd onnxruntime
+          unzip -q ort.nupkg
+          # Locate headers + x64 import lib + runtime DLL.
+          # The NuGet has win-arm64, win-x64, win-x86 — must pick x64 explicitly.
+          echo "=== Headers ==="
+          ls -la build/native/include/onnxruntime_c_api.h
+          echo "=== Find import lib (.lib) ==="
+          find . -name "onnxruntime.lib" -type f
+          echo "=== Find runtime DLL ==="
+          find . -name "onnxruntime.dll" -type f
+          # Force win-x64 (the runner is x64). ARM64/x86 are wrong arch.
+          ORT_LIB="./runtimes/win-x64/native/onnxruntime.lib"
+          if [ ! -f "$ORT_LIB" ]; then
+            echo "ERROR: win-x64 onnxruntime.lib not found"; exit 1
+          fi
+          echo "ORT_LIB=$ORT_LIB"
+          # Save paths for the configure step.
+          echo "ORT_INCLUDE=$PWD/build/native/include" >> $GITHUB_ENV
+          # Resolve to absolute path.
+          echo "ORT_LIB_ABS=$(cd "$(dirname "$ORT_LIB")" && pwd)/$(basename "$ORT_LIB")" >> $GITHUB_ENV
+
       - name: Configure plugin (with OBS deps)
         shell: bash
         run: |
@@ -135,6 +166,10 @@ jobs:
           EXTRA_ARGS=""
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA_ARGS="-Dw32-pthreads_DIR=$PWD/obs-build/deps/w32-pthreads"
+            # ONNX Runtime DirectML (Windows only).
+            EXTRA_ARGS="$EXTRA_ARGS -DDANCEHAP_WITH_ONNXRUNTIME=ON"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_INCLUDE_DIRS=$ORT_INCLUDE"
+            EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_LIBRARIES=$ORT_LIB_ABS"
           fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
@@ -179,6 +214,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path build\artifact | Out-Null
           Copy-Item $plugin.FullName -Destination build\artifact\dancehap.dll
           Write-Host "Plugin copied from $($plugin.FullName) to build\artifact\dancehap.dll"
+          # Bundle onnxruntime.dll (Phase 2.3 DirectML) next to the plugin.
+          # OBS needs it at load time; deploy copies both to the plugins dir.
+          $ortDll = Get-ChildItem -Path onnxruntime -Recurse -Filter 'onnxruntime.dll' | Select-Object -First 1
+          if ($ortDll) {
+            Copy-Item $ortDll.FullName -Destination build\artifact\onnxruntime.dll
+            Write-Host "onnxruntime.dll bundled for DirectML (from $($ortDll.FullName))"
+          } else {
+            Write-Host "WARN: onnxruntime.dll not found — plugin may fail to load"
+          }
 
       - name: Locate built plugin (macOS)
         if: runner.os == 'macOS'
