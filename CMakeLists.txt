@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.3.1
+    VERSION 0.3.2
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )
@@ -69,10 +69,14 @@ if(DANCEHAP_WITH_OBS_DEPS)
         pkg_check_modules(DH_AVFORMAT QUIET IMPORTED_TARGET libavformat)
         pkg_check_modules(DH_AVCODEC  QUIET IMPORTED_TARGET libavcodec)
         pkg_check_modules(DH_AVUTIL   QUIET IMPORTED_TARGET libavutil)
+        pkg_check_modules(DH_SWRESAMPLE QUIET IMPORTED_TARGET libswresample)
     endif()
     if(TARGET PkgConfig::DH_AVFORMAT AND TARGET PkgConfig::DH_AVCODEC AND TARGET PkgConfig::DH_AVUTIL)
         set(DANCEHAP_HAVE_FFMPEG 1)
         set(DANCEHAP_FFMPEG_LIBS PkgConfig::DH_AVFORMAT PkgConfig::DH_AVCODEC PkgConfig::DH_AVUTIL)
+        if(TARGET PkgConfig::DH_SWRESAMPLE)
+            list(APPEND DANCEHAP_FFMPEG_LIBS PkgConfig::DH_SWRESAMPLE)
+        endif()
         message(STATUS "FFmpeg: found via pkg-config")
     else()
         find_path(DH_FFMPEG_INCLUDE_DIR
@@ -81,9 +85,13 @@ if(DANCEHAP_WITH_OBS_DEPS)
         find_library(DH_AVFORMAT_LIB NAMES avformat libavformat avformat-61)
         find_library(DH_AVCODEC_LIB  NAMES avcodec libavcodec avcodec-61)
         find_library(DH_AVUTIL_LIB   NAMES avutil libavutil avutil-59)
+        find_library(DH_SWRESAMPLE_LIB NAMES swresample libswresample swresample-5)
         if(DH_FFMPEG_INCLUDE_DIR AND DH_AVFORMAT_LIB AND DH_AVCODEC_LIB AND DH_AVUTIL_LIB)
             set(DANCEHAP_HAVE_FFMPEG 1)
             set(DANCEHAP_FFMPEG_LIBS ${DH_AVFORMAT_LIB} ${DH_AVCODEC_LIB} ${DH_AVUTIL_LIB})
+            if(DH_SWRESAMPLE_LIB)
+                list(APPEND DANCEHAP_FFMPEG_LIBS ${DH_SWRESAMPLE_LIB})
+            endif()
             message(STATUS "FFmpeg: found via manual search (inc=${DH_FFMPEG_INCLUDE_DIR})")
         else()
             message(STATUS "FFmpeg: not found — using stub demuxer (real-OBS build)")
@@ -141,6 +149,7 @@ set(DANCEHAP_SOURCES
     src/hap_clip_source.cpp
     src/hap_demuxer.cpp
     src/hap_decoder.cpp
+    src/audio_decoder.cpp
     src/clip_player.cpp
 )
 if(NOT DANCEHAP_WITH_OBS_DEPS)

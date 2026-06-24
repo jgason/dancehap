@@ -63,15 +63,14 @@ inline const char *player_state_to_string(PlayerState s)
 // ---------------------------------------------------------------------------
 // AudioOutput — PCM audio pulled from the player for OBS output.
 //
-// In stub mode (no FFmpeg), the demuxer returns zero-filled audio packets
-// that cannot be decoded to real PCM. pullAudio() therefore returns SILENCE
-// (zero-filled float samples) with correct timing metadata. The timing
-// (duration_us, pts_us, channels, sample_rate) is what drives the audio
-// master clock — the actual sample content is irrelevant for sync.
+// In stub mode (no FFmpeg), the audio decoder produces a synthetic sinusoid
+// (440 Hz) with continuous phase across packets. This allows tests to
+// validate the full audio path (demux → decode → pullAudio) without a real
+// AAC decoder. The timing metadata (duration_us, pts_us, channels,
+// sample_rate) drives the audio master clock.
 //
-// In real mode (DANCEHAP_HAVE_FFMPEG), the demuxer audio packets would be
-// decoded to real PCM. Audio decoding integration is a Phase 1.5+ concern;
-// for Phase 1.4 the timing correctness is validated in stub mode.
+// In real mode (DANCEHAP_HAVE_FFMPEG), audio packets are decoded to real
+// interleaved float PCM via libavcodec + libswresample.
 // ---------------------------------------------------------------------------
 
 struct AudioOutput {
@@ -149,8 +148,8 @@ public:
     // --- Audio output -----------------------------------------------------
 
     /// Pull up to max_duration_us of audio for output.
-    /// Returns silence in stub mode with correct timing metadata.
-    /// At EOF with loop=true, the audio cursor wraps around.
+    /// Decodes audio packets from the demuxer and returns interleaved
+    /// float PCM. At EOF with loop=true, the audio cursor wraps around.
     /// At EOF with loop=false, returns valid=false (silence).
     AudioOutput pullAudio(int64_t max_duration_us);
 
