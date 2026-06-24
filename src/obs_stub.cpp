@@ -54,6 +54,13 @@ void obs_data_set_default_bool(obs_data_t *settings,
     settings->default_bools[name] = val;
 }
 
+void obs_data_set_default_int(obs_data_t *settings,
+                               const char *name, long long val)
+{
+    if (!settings || !name) return;
+    settings->default_ints[name] = val;
+}
+
 const char *obs_data_get_string(obs_data_t *settings, const char *name)
 {
     if (!settings || !name) return "";
@@ -75,6 +82,16 @@ bool obs_data_get_bool(obs_data_t *settings, const char *name)
     return false;
 }
 
+long long obs_data_get_int(obs_data_t *settings, const char *name)
+{
+    if (!settings || !name) return 0;
+    auto it = settings->ints.find(name);
+    if (it != settings->ints.end()) return it->second;
+    auto dit = settings->default_ints.find(name);
+    if (dit != settings->default_ints.end()) return dit->second;
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // obs_properties stub
 // ---------------------------------------------------------------------------
@@ -93,7 +110,7 @@ obs_properties_t *obs_properties_add_path(obs_properties_t *props,
                                            const char *name,
                                            const char *description,
                                            enum obs_path_type /*type*/,
-                                           const char * /*filter*/,
+                                           const char *filter,
                                            const char * /*default_path*/)
 {
     if (!props || !name) return props;
@@ -101,6 +118,7 @@ obs_properties_t *obs_properties_add_path(obs_properties_t *props,
     p.name = name;
     p.description = description ? description : "";
     p.kind = "path";
+    p.filter = filter ? filter : "";
     props->props.push_back(std::move(p));
     return props;
 }
@@ -114,6 +132,23 @@ obs_properties_t *obs_properties_add_bool(obs_properties_t *props,
     p.name = name;
     p.description = description ? description : "";
     p.kind = "bool";
+    props->props.push_back(std::move(p));
+    return props;
+}
+
+obs_properties_t *obs_properties_add_int(obs_properties_t *props,
+                                          const char *name,
+                                          const char *description,
+                                          int min_val, int max_val, int step_val)
+{
+    if (!props || !name) return props;
+    obs_properties::property p;
+    p.name = name;
+    p.description = description ? description : "";
+    p.kind = "int";
+    p.min_val = min_val;
+    p.max_val = max_val;
+    p.step_val = step_val;
     props->props.push_back(std::move(p));
     return props;
 }

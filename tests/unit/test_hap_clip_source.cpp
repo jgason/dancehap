@@ -130,8 +130,8 @@ TEST_F(HapClipSourceTest, PropertiesHasPathLoopAutoplay)
     obs_properties_t *props = info->get_properties(nullptr);
     ASSERT_NE(props, nullptr);
 
-    // Should have exactly 3 properties: path, loop, autoplay.
-    EXPECT_EQ(props->props.size(), 3u);
+    // Should have exactly 4 properties: path, loop, autoplay, volume.
+    EXPECT_EQ(props->props.size(), 4u);
 
     ASSERT_NE(find_property(props, "path"), nullptr);
     EXPECT_EQ(find_property(props, "path")->kind, "path");
@@ -141,6 +141,32 @@ TEST_F(HapClipSourceTest, PropertiesHasPathLoopAutoplay)
 
     ASSERT_NE(find_property(props, "autoplay"), nullptr);
     EXPECT_EQ(find_property(props, "autoplay")->kind, "bool");
+
+    obs_properties_destroy(props);
+}
+
+// Phase 1.5.a Étape 1: file dialog filter must restrict to .mov HAP clips.
+TEST_F(HapClipSourceTest, GetPropertiesReturnsHapMovFilter)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+    ASSERT_NE(info->get_properties, nullptr);
+
+    obs_properties_t *props = info->get_properties(nullptr);
+    ASSERT_NE(props, nullptr);
+
+    const obs_properties::property *path_prop = find_property(props, "path");
+    ASSERT_NE(path_prop, nullptr);
+    EXPECT_EQ(path_prop->kind, "path");
+
+    // The filter must include *.mov (the canonical HAP container).
+    EXPECT_NE(path_prop->filter.find("*.mov"), std::string::npos)
+        << "path filter should include *.mov; got: '" << path_prop->filter << "'";
+
+    // The filter must NOT include *.mp4 (HAP .mp4 is rare; restricting to
+    // .mov avoids confusion with regular H.264 .mp4 files).
+    EXPECT_EQ(path_prop->filter.find("*.mp4"), std::string::npos)
+        << "path filter should NOT include *.mp4; got: '" << path_prop->filter << "'";
 
     obs_properties_destroy(props);
 }
@@ -189,6 +215,71 @@ TEST_F(HapClipSourceTest, UpdateChangesSettingsWithoutCrash)
     // but we can verify the update path by checking no assertion fires.
     info->destroy(data);
     SUCCEED();
+
+    obs_data_release(settings);
+}
+
+// Phase 1.5.a Étape 2: update() with a non-existent path must not crash and
+// must not attempt to load the file. The user gets a clean no-op.
+TEST_F(HapClipSourceTest, UpdateWithNonExistentPathDoesNotCrash)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+
+    obs_data_t *settings = obs_data_create();
+    info->get_defaults(settings);
+
+    void *data = info->create(settings, nullptr);
+    ASSERT_NE(data, nullptr);
+
+    // Point to a path that definitely doesn't exist.
+    settings->strings["path"] = "/definitely/not/a/real/path/clip.mov";
+    info->update(data, settings);
+
+    // The main assertion is "no crash". We can't easily peek into the context
+    // from here, but the source must remain in a valid state — calling
+    // video_tick and video_render should be safe no-ops.
+    info->video_tick(data, 0.016f);
+    info->video_render(data, nullptr);
+
+    info->destroy(data);
+    obs_data_release(settings);
+    SUCCEED();
+}
+
+// Phase 1.5.a Étape 4: volume property must exist and default to 100.
+TEST_F(HapClipSourceTest, GetPropertiesReturnsVolumeInt)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+    ASSERT_NE(info->get_properties, nullptr);
+
+    obs_properties_t *props = info->get_properties(nullptr);
+    ASSERT_NE(props, nullptr);
+
+    const obs_properties::property *vol_prop = find_property(props, "volume");
+    ASSERT_NE(vol_prop, nullptr);
+    EXPECT_EQ(vol_prop->kind, "int");
+    EXPECT_EQ(vol_prop->min_val, 0);
+    EXPECT_EQ(vol_prop->max_val, 100);
+
+    obs_properties_destroy(props);
+}
+
+TEST_F(HapClipSourceTest, DefaultsSetVolumeTo100)
+{
+    const obs_source_info *info = hap_clip_source_get_info();
+    ASSERT_NE(info, nullptr);
+
+    obs_data_t *settings = obs_data_create();
+    info->get_defaults(settings);
+
+    // Defaults land in `default_ints` (the stub distinguishes explicit
+    // user values from defaults). obs_data_get_int falls back to defaults
+    // when the explicit map is empty, so reading via get_int returns 100.
+    EXPECT_EQ(settings->default_ints.count("volume"), 1u);
+    EXPECT_EQ(settings->default_ints["volume"], 100);
+    EXPECT_EQ(obs_data_get_int(settings, "volume"), 100);
 
     obs_data_release(settings);
 }
