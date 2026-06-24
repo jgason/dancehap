@@ -18,6 +18,7 @@
 #include <string>
 
 #include "hap_clip_source.hpp"
+#include "ai_matte_filter.hpp"
 #include "obs_compat.hpp"
 #include "plugin.hpp"
 
@@ -341,11 +342,12 @@ TEST_F(HapClipSourceTest, ModuleLoadRegistersSource)
     // Trigger module load.
     EXPECT_TRUE(obs_module_load());
 
-    // After load: exactly 1 registration, and it's our source.
-    EXPECT_EQ(obs_stub_registration_count(), 1);
+    // After load: exactly 2 registrations (hap_clip_source + ai_matte_filter).
+    // The last registered source is the ai_matte_filter (registered second).
+    EXPECT_EQ(obs_stub_registration_count(), 2);
     const obs_source_info *registered = obs_stub_last_registered_source();
     ASSERT_NE(registered, nullptr);
-    EXPECT_STREQ(registered->id, HAP_CLIP_SOURCE_ID);
+    EXPECT_STREQ(registered->id, AI_MATTE_FILTER_ID);
 }
 
 TEST_F(HapClipSourceTest, RegisterHapClipSourceCallsObsRegisterSource)
