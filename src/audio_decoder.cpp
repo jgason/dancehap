@@ -105,7 +105,7 @@ bool AudioDecoder::init(const AudioInfo &info)
     }
 
     pimpl_->codec_ctx->sample_rate    = info.sample_rate;
-    pimpl_->codec_ctx->ch_layout      = AV_CHANNEL_LAYOUT_INIT(info.channels);
+    av_channel_layout_default(&pimpl_->codec_ctx->ch_layout, info.channels);
     pimpl_->codec_ctx->request_sample_fmt = AV_SAMPLE_FMT_FLT;
 
     if (avcodec_open2(pimpl_->codec_ctx, pimpl_->codec, nullptr) < 0) {
@@ -201,11 +201,13 @@ std::vector<float> AudioDecoder::decode(const DemuxPacket &packet)
         } else {
             // Other formats: use SwrContext to convert to FLT packed.
             if (!pimpl_->swr) {
-                AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_INIT(frame_channels);
+                AVChannelLayout out_layout;
+                av_channel_layout_default(&out_layout, frame_channels);
                 ret = swr_alloc_set_opts2(&pimpl_->swr,
                     &out_layout, AV_SAMPLE_FMT_FLT, pimpl_->sample_rate,
                     &pimpl_->frame->ch_layout, fmt, pimpl_->frame->sample_rate,
                     0, nullptr);
+                av_channel_layout_uninit(&out_layout);
                 if (ret < 0 || !pimpl_->swr) {
                     blog(LOG_WARNING, "[DanceHAP] AudioDecoder: swr setup failed");
                     av_frame_unref(pimpl_->frame);
