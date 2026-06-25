@@ -94,7 +94,17 @@ struct ai_matte_context {
     std::string loaded_model_path;    // ONNX model path (actually loaded)
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    dancehap::MatteEngine engine;     // matting inference engine
+    // LAZY-INIT: the MatteEngine is NOT constructed at filter creation.
+    // Constructing it triggers OrtGetApiBase() → onnxruntime.dll load
+    // (13.5 MB) on the OBS graphics thread → freeze. Instead, we create
+    // the engine only when the user actually enables the matte AND picks
+    // a model, inside the worker thread.
+    std::unique_ptr<dancehap::MatteEngine> engine;
+
+    // Config + provider are stored here until the engine is lazily created.
+    dancehap::MatteModelConfig config;
+    dancehap::ExecutionProvider desired_ep = dancehap::ExecutionProvider::Auto;
+    bool engine_created = false;
 #endif
 
 #ifdef DANCEHAP_HAVE_OBS
@@ -123,6 +133,8 @@ struct ai_matte_context {
     // Model load request (render thread sets, worker executes)
     std::string pending_model_path;
     bool model_load_requested = false;
+    // Engine creation request (first enable) — worker creates engine off-thread
+    bool engine_create_requested = false;
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
     /// Worker thread main loop.
@@ -131,10 +143,27 @@ struct ai_matte_context {
         while (!stop.load()) {
             std::unique_lock<std::mutex> lock(mtx);
             cv.wait(lock, [this] {
-                return stop.load() || input_ready || model_load_requested;
+                return stop.load() || input_ready || model_load_requested
+                    || engine_create_requested;
             });
 
             if (stop.load()) break;
+
+            // --- Handle engine creation (first enable, off-thread) ---
+            if (engine_create_requested) {
+                engine_create_requested = false;
+                lock.unlock();
+
+                if (!engine_created) {
+                    blog(LOG_INFO, "[DanceHAP] MatteEngine: creating engine (async)");
+                    engine = std::make_unique<dancehap::MatteEngine>();
+                    engine->setConfig(config);
+                    engine->setDesiredProvider(desired_ep);
+                    engine_created = true;
+                    blog(LOG_INFO, "[DanceHAP] MatteEngine: engine created (async)");
+                }
+                continue;
+            }
 
             // --- Handle model load request (blocking, on worker thread) ---
             if (model_load_requested) {
@@ -142,14 +171,16 @@ struct ai_matte_context {
                 model_load_requested = false;
                 lock.unlock();
 
-                blog(LOG_INFO, "[DanceHAP] MatteEngine: loading model '%s' (async)",
-                     path.c_str());
-                if (!engine.loadModel(path)) {
-                    blog(LOG_WARNING, "[DanceHAP] MatteEngine: failed to load '%s'",
+                if (engine && !path.empty()) {
+                    blog(LOG_INFO, "[DanceHAP] MatteEngine: loading model '%s' (async)",
                          path.c_str());
-                } else {
-                    loaded_model_path = path;
-                    blog(LOG_INFO, "[DanceHAP] MatteEngine: model loaded (async)");
+                    if (!engine->loadModel(path)) {
+                        blog(LOG_WARNING, "[DanceHAP] MatteEngine: failed to load '%s'",
+                             path.c_str());
+                    } else {
+                        loaded_model_path = path;
+                        blog(LOG_INFO, "[DanceHAP] MatteEngine: model loaded (async)");
+                    }
                 }
                 continue;  // re-loop to check for new work
             }
@@ -163,13 +194,13 @@ struct ai_matte_context {
                 lock.unlock();
 
                 // Run inference only if engine is ready.
-                if (engine.isReady() && w > 0 && h > 0) {
+                if (engine && engine->isReady() && w > 0 && h > 0) {
                     dancehap::ImageFrame img;
                     img.width  = static_cast<int>(w);
                     img.height = static_cast<int>(h);
                     img.data_rgba = input.data();
 
-                    dancehap::MatteMask mask = engine.infer(img);
+                    dancehap::MatteMask mask = engine->infer(img);
 
                     // Apply mask to the BGRA frame.
                     std::vector<uint8_t> processed =
@@ -220,10 +251,11 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
 #ifdef DANCEHAP_HAVE_OBS
     ctx->source = source;
 #endif
-#ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    ctx->start_worker();
-#endif
-    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (async worker v%s)",
+    // LAZY-INIT: do NOT start the worker thread here, and do NOT construct
+    // the MatteEngine. Both happen only when the user enables the matte
+    // (see ai_matte_update). This keeps filter creation instant and
+    // prevents onnxruntime.dll from being loaded until needed.
+    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (lazy init, v%s)",
          DANCEHAP_VERSION_STRING);
     return ctx;
 }
@@ -311,20 +343,45 @@ void ai_matte_update(void *data, obs_data_t *settings)
     dancehap::MatteModelConfig cfg;
     cfg.input_width  = res;
     cfg.input_height = res;
-    ctx->engine.setConfig(cfg);
+    ctx->config = cfg;  // store for lazy engine creation
 
     dancehap::ExecutionProvider ep =
         (provider == 1) ? dancehap::ExecutionProvider::DirectML :
         (provider == 2) ? dancehap::ExecutionProvider::CoreML :
         (provider == 3) ? dancehap::ExecutionProvider::CPU :
                           dancehap::ExecutionProvider::Auto;
-    ctx->engine.setDesiredProvider(ep);
+    ctx->desired_ep = ep;  // store for lazy engine creation
+
+    // If engine already exists, update its config.
+    if (ctx->engine_created && ctx->engine) {
+        ctx->engine->setConfig(cfg);
+        ctx->engine->setDesiredProvider(ep);
+    }
 
     // Request async model load if enabled and path changed.
     // The worker thread handles the actual loadModel() call so the OBS
     // graphics thread never blocks.
     if (enable && !ctx->model_path.empty()) {
-        if (!ctx->engine.isReady() || ctx->model_path != ctx->loaded_model_path) {
+        // Start worker + create engine lazily on first enable.
+        if (!ctx->engine_created) {
+            ctx->start_worker();
+            {
+                std::lock_guard<std::mutex> lock(ctx->mtx);
+                ctx->engine_create_requested = true;
+            }
+            ctx->cv.notify_one();
+            blog(LOG_INFO, "[DanceHAP] MatteEngine: engine create requested (async)");
+        }
+
+        bool need_load = !ctx->engine_created
+            || ctx->model_path != ctx->loaded_model_path;
+        // If engine exists and is ready and path matches, nothing to do.
+        if (ctx->engine_created && ctx->engine
+            && ctx->engine->isReady()
+            && ctx->model_path == ctx->loaded_model_path) {
+            need_load = false;
+        }
+        if (need_load) {
             {
                 std::lock_guard<std::mutex> lock(ctx->mtx);
                 ctx->pending_model_path = ctx->model_path;
