@@ -4,34 +4,45 @@
 // ai_matte_filter.cpp — OBS filter that applies AI-based matting to a webcam
 // source.
 //
-// Phase 2.0: skeleton — OBS_SOURCE_TYPE_FILTER, pass-through render.
-// Phase 2.2: MatteEngine ONNX inference integrated in video_tick.
-// Phase 2.5: Properties UI (enable, model path, provider, quality).
-// Phase 2.5b (v0.4.7): ASYNC inference + model load on a worker thread.
-//   Fixes:
-//     (1) Freeze on Enable — loadModel() was synchronous in update(), blocking
-//         the OBS graphics thread for several seconds (DirectML EP init).
-//     (2) Freeze during playback — engine.infer() was synchronous in
-//         video_tick, blocking the render thread ~30 ms/frame at 256px.
-//     (3) Matte invisible — video_render did a pure pass-through and never
-//         used processed_frame. Now video_tick applies the processed alpha
-//         in-place on the OBS frame before render.
+// Phase 2.0-2.5: skeleton + MatteEngine + Properties UI.
+// Phase 2.5b (v0.4.7-v0.4.8): async worker thread for inference + model load.
+// Phase 2.5c (v0.4.9): REWRITE using the correct OBS filter pattern.
 //
-// Architecture:
-//   video_tick (render thread):
-//     1. Copy OBS frame → input_buffer (non-blocking, ~0.1 ms for 720p).
-//     2. Notify worker thread.
-//     3. If output_buffer ready and same dims → memcpy to frame->data[0].
-//     4. release_frame.
-//   worker thread:
-//     1. Wait on condition_variable (input ready OR model load requested).
-//     2. If model load requested → engine.loadModel() (blocking, off-thread).
-//     3. If input ready → preprocess + infer + postprocess → output_buffer.
+// History of bugs fixed in this version:
+//   v0.4.7: async inference + model load (worker thread).
+//   v0.4.8: lazy-init engine (don't load onnxruntime.dll at filter creation).
+//   v0.4.9: use texrender + stagesurface + process_filter_begin/end pattern
+//           (instead of obs_source_get_frame which is for async sources).
+//           This fixes:
+//             - Frame deformation (stretch/squeeze) — we were memcpy'ing
+//               without respecting the frame's linesize.
+//             - Freeze — obs_source_get_frame on a sync filter source causes
+//               a deadlock with the OBS graphics thread.
+//
+// The correct pattern for a synchronous video filter in OBS (following
+// obs-backgroundremoval by royshil) is:
+//
 //   video_render (render thread):
-//     obs_source_default_render(target) — renders the frame that video_tick
-//     may have modified in-place. No CUSTOM_DRAW needed.
+//     1. gs_texrender_begin(texrender, w, h) → render target source into it
+//     2. gs_stage_texture(stagesurface, texrender_texture) → GPU→CPU copy
+//     3. gs_stagesurface_map → get video_data + linesize
+//     4. Copy frame data to inputBGRA (respecting linesize!)
+//     5. gs_stagesurface_unmap
+//     6. obs_source_process_filter_begin(source, GS_RGBA, ...)
+//     7. Create alpha texture from backgroundMask
+//     8. gs_effect_set_texture + draw with shader
+//     9. obs_source_process_filter_end
 //
-// Reference: obs-studio/plugins/obs-filters/ (e.g. noise-filter.c, mask-filter.c)
+//   video_tick (video thread):
+//     1. Try-lock inputBGRALock (don't block the render thread)
+//     2. If inputBGRA available → clone it
+//     3. Run inference → produce backgroundMask
+//     4. Store backgroundMask under outputLock
+//
+// Reference: github.com/royshil/obs-backgroundremoval/blob/main/src/
+//   - background-filter.cpp (video_tick + video_render)
+//   - obs-utils/obs-utils.cpp (getRGBAFromStageSurface)
+//   - FilterData.hpp (struct layout)
 
 #include "ai_matte_filter.hpp"
 #include "dancehap/version.h"
@@ -52,6 +63,7 @@ namespace dancehap {
 
 /// Apply an alpha mask to a BGRA frame.
 /// Multiplies each pixel's alpha channel by the corresponding mask value.
+/// Assumes packed BGRA (linesize == width * 4).
 std::vector<uint8_t> apply_alpha_mask_to_bgra(
     const uint8_t *bgra_data, uint32_t width, uint32_t height,
     const std::vector<float> &mask)
@@ -62,19 +74,22 @@ std::vector<uint8_t> apply_alpha_mask_to_bgra(
     size_t pixel_count = static_cast<size_t>(width) * height;
     out.resize(pixel_count * 4);
 
-    // If mask is empty or wrong size, pass through unchanged (no matting).
     bool mask_valid = (mask.size() == pixel_count);
 
-    for (size_t i = 0; i < pixel_count; ++i) {
-        out[i * 4 + 0] = bgra_data[i * 4 + 0];  // B
-        out[i * 4 + 1] = bgra_data[i * 4 + 1];  // G
-        out[i * 4 + 2] = bgra_data[i * 4 + 2];  // R
-        // Alpha: original alpha * mask value (clamped).
-        float a = mask_valid ? mask[i] : 1.0f;
-        if (a < 0.0f) a = 0.0f;
-        if (a > 1.0f) a = 1.0f;
-        out[i * 4 + 3] = static_cast<uint8_t>(
-            static_cast<float>(bgra_data[i * 4 + 3]) * a);
+    for (uint32_t row = 0; row < height; ++row) {
+        const uint8_t *src = bgra_data + static_cast<size_t>(row) * width * 4;
+        uint8_t *dst = out.data() + static_cast<size_t>(row) * width * 4;
+        for (uint32_t col = 0; col < width; ++col) {
+            size_t pi = static_cast<size_t>(row) * width + col;
+            dst[col * 4 + 0] = src[col * 4 + 0];  // B
+            dst[col * 4 + 1] = src[col * 4 + 1];  // G
+            dst[col * 4 + 2] = src[col * 4 + 2];  // R
+            float a = mask_valid ? mask[pi] : 1.0f;
+            if (a < 0.0f) a = 0.0f;
+            if (a > 1.0f) a = 1.0f;
+            dst[col * 4 + 3] = static_cast<uint8_t>(
+                static_cast<float>(src[col * 4 + 3]) * a);
+        }
     }
     return out;
 }
@@ -82,74 +97,72 @@ std::vector<uint8_t> apply_alpha_mask_to_bgra(
 } // namespace dancehap
 
 // ---------------------------------------------------------------------------
-// Per-instance context (with worker thread for async inference)
+// Per-instance context (OBS filter with async inference)
 // ---------------------------------------------------------------------------
 
 namespace {
 
 struct ai_matte_context {
     bool active = false;
-    bool matte_enabled = false;       // user toggle (Phase 2.5 properties)
+    bool matte_enabled = false;       // user toggle
     std::string model_path;           // ONNX model path (current setting)
     std::string loaded_model_path;    // ONNX model path (actually loaded)
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    // LAZY-INIT: the MatteEngine is NOT constructed at filter creation.
-    // Constructing it triggers OrtGetApiBase() → onnxruntime.dll load
-    // (13.5 MB) on the OBS graphics thread → freeze. Instead, we create
-    // the engine only when the user actually enables the matte AND picks
-    // a model, inside the worker thread.
+    // LAZY-INIT: engine created only when user enables matte.
     std::unique_ptr<dancehap::MatteEngine> engine;
-
-    // Config + provider are stored here until the engine is lazily created.
     dancehap::MatteModelConfig config;
     dancehap::ExecutionProvider desired_ep = dancehap::ExecutionProvider::Auto;
     bool engine_created = false;
 #endif
 
 #ifdef DANCEHAP_HAVE_OBS
-    obs_source_t *source = nullptr;   // the filter's own OBS source handle
+    obs_source_t *source = nullptr;
+    gs_texrender_t *texrender = nullptr;
+    gs_stagesurf_t *stagesurface = nullptr;
+    uint32_t stagesurface_w = 0;
+    uint32_t stagesurface_h = 0;
 #endif
+
+    // Input buffer (render thread writes, worker reads)
+    // Packed BGRA, width*height*4 bytes, no padding (linesize already handled)
+    std::vector<uint8_t> inputBGRA;
+    uint32_t input_w = 0;
+    uint32_t input_h = 0;
+    std::mutex inputBGRALock;
+
+    // Output mask (worker writes, render thread reads)
+    std::vector<float> outputMask;
+    uint32_t mask_w = 0;
+    uint32_t mask_h = 0;
+    bool mask_ready = false;
+    std::mutex outputLock;
 
     // ---- Worker thread (async inference + model load) -------------------
 
     std::thread worker;
-    std::mutex mtx;                   // protects all shared buffers below
+    std::mutex worker_mtx;
     std::condition_variable cv;
     std::atomic<bool> stop{false};
 
-    // Input: latest frame copied from OBS (render thread writes, worker reads)
-    std::vector<uint8_t> input_buffer;
-    uint32_t input_w = 0;
-    uint32_t input_h = 0;
-    bool input_ready = false;
-
-    // Output: last processed frame (worker writes, render thread reads)
-    std::vector<uint8_t> output_buffer;
-    uint32_t output_w = 0;
-    uint32_t output_h = 0;
-    bool output_ready = false;
-
-    // Model load request (render thread sets, worker executes)
+    // Model load request
     std::string pending_model_path;
     bool model_load_requested = false;
-    // Engine creation request (first enable) — worker creates engine off-thread
     bool engine_create_requested = false;
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    /// Worker thread main loop.
     void worker_loop()
     {
         while (!stop.load()) {
-            std::unique_lock<std::mutex> lock(mtx);
+            std::unique_lock<std::mutex> lock(worker_mtx);
             cv.wait(lock, [this] {
-                return stop.load() || input_ready || model_load_requested
+                return stop.load() || model_load_requested
                     || engine_create_requested;
             });
 
             if (stop.load()) break;
 
-            // --- Handle engine creation (first enable, off-thread) ---
+            // --- Handle engine creation ---
             if (engine_create_requested) {
                 engine_create_requested = false;
                 lock.unlock();
@@ -165,7 +178,7 @@ struct ai_matte_context {
                 continue;
             }
 
-            // --- Handle model load request (blocking, on worker thread) ---
+            // --- Handle model load ---
             if (model_load_requested) {
                 std::string path = pending_model_path;
                 model_load_requested = false;
@@ -182,47 +195,14 @@ struct ai_matte_context {
                         blog(LOG_INFO, "[DanceHAP] MatteEngine: model loaded (async)");
                     }
                 }
-                continue;  // re-loop to check for new work
-            }
-
-            // --- Handle inference request ---
-            if (input_ready) {
-                std::vector<uint8_t> input = std::move(input_buffer);
-                uint32_t w = input_w;
-                uint32_t h = input_h;
-                input_ready = false;
-                lock.unlock();
-
-                // Run inference only if engine is ready.
-                if (engine && engine->isReady() && w > 0 && h > 0) {
-                    dancehap::ImageFrame img;
-                    img.width  = static_cast<int>(w);
-                    img.height = static_cast<int>(h);
-                    img.data_rgba = input.data();
-
-                    dancehap::MatteMask mask = engine->infer(img);
-
-                    // Apply mask to the BGRA frame.
-                    std::vector<uint8_t> processed =
-                        dancehap::apply_alpha_mask_to_bgra(
-                            input.data(), w, h, mask.alpha);
-
-                    // Publish to output buffer.
-                    {
-                        std::lock_guard<std::mutex> olock(mtx);
-                        output_buffer = std::move(processed);
-                        output_w = w;
-                        output_h = h;
-                        output_ready = true;
-                    }
-                }
+                continue;
             }
         }
     }
 
     void start_worker()
     {
-        if (worker.joinable()) return;  // already running
+        if (worker.joinable()) return;
         stop.store(false);
         worker = std::thread([this] { worker_loop(); });
     }
@@ -250,12 +230,11 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
     auto *ctx = new ai_matte_context();
 #ifdef DANCEHAP_HAVE_OBS
     ctx->source = source;
+
+    // Create texrender (will be resized on first render)
+    ctx->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 #endif
-    // LAZY-INIT: do NOT start the worker thread here, and do NOT construct
-    // the MatteEngine. Both happen only when the user enables the matte
-    // (see ai_matte_update). This keeps filter creation instant and
-    // prevents onnxruntime.dll from being loaded until needed.
-    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (lazy init, v%s)",
+    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (v%s)",
          DANCEHAP_VERSION_STRING);
     return ctx;
 }
@@ -266,6 +245,16 @@ void ai_matte_destroy(void *data)
     if (!ctx) return;
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
     ctx->stop_worker();
+#endif
+#ifdef DANCEHAP_HAVE_OBS
+    if (ctx->stagesurface) {
+        gs_stagesurface_destroy(ctx->stagesurface);
+        ctx->stagesurface = nullptr;
+    }
+    if (ctx->texrender) {
+        gs_texrender_destroy(ctx->texrender);
+        ctx->texrender = nullptr;
+    }
 #endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter destroyed");
     delete ctx;
@@ -284,16 +273,13 @@ obs_properties_t *ai_matte_get_properties(void * /*data*/)
 {
     obs_properties_t *props = obs_properties_create();
 
-    // Enable toggle.
     obs_properties_add_bool(props, "matte_enable",
         obs_module_text("DanceHAP.Matte.Enable"));
 
-    // Model path (.onnx file).
     obs_properties_add_path(props, "matte_model_path",
         obs_module_text("DanceHAP.Matte.ModelPath"),
         OBS_PATH_FILE, "ONNX model (*.onnx)", nullptr);
 
-    // Execution provider.
     obs_property_t *prop_prov = obs_properties_add_list(props,
         "matte_provider",
         obs_module_text("DanceHAP.Matte.Provider"),
@@ -307,7 +293,6 @@ obs_properties_t *ai_matte_get_properties(void * /*data*/)
     obs_property_list_add_int(prop_prov,
         obs_module_text("DanceHAP.Matte.Provider.CPU"), 3);
 
-    // Quality (internal resolution).
     obs_property_t *prop_qual = obs_properties_add_list(props,
         "matte_quality",
         obs_module_text("DanceHAP.Matte.Quality"),
@@ -335,38 +320,31 @@ void ai_matte_update(void *data, obs_data_t *settings)
     ctx->matte_enabled = enable;
     ctx->model_path = model ? model : "";
 
-    // Map quality index → internal resolution.
     int res = (quality == 0) ? 192 : (quality == 2) ? 512 : 256;
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    // Update engine config (non-blocking, just sets a struct).
     dancehap::MatteModelConfig cfg;
     cfg.input_width  = res;
     cfg.input_height = res;
-    ctx->config = cfg;  // store for lazy engine creation
+    ctx->config = cfg;
 
     dancehap::ExecutionProvider ep =
         (provider == 1) ? dancehap::ExecutionProvider::DirectML :
         (provider == 2) ? dancehap::ExecutionProvider::CoreML :
         (provider == 3) ? dancehap::ExecutionProvider::CPU :
                           dancehap::ExecutionProvider::Auto;
-    ctx->desired_ep = ep;  // store for lazy engine creation
+    ctx->desired_ep = ep;
 
-    // If engine already exists, update its config.
     if (ctx->engine_created && ctx->engine) {
         ctx->engine->setConfig(cfg);
         ctx->engine->setDesiredProvider(ep);
     }
 
-    // Request async model load if enabled and path changed.
-    // The worker thread handles the actual loadModel() call so the OBS
-    // graphics thread never blocks.
     if (enable && !ctx->model_path.empty()) {
-        // Start worker + create engine lazily on first enable.
         if (!ctx->engine_created) {
             ctx->start_worker();
             {
-                std::lock_guard<std::mutex> lock(ctx->mtx);
+                std::lock_guard<std::mutex> lock(ctx->worker_mtx);
                 ctx->engine_create_requested = true;
             }
             ctx->cv.notify_one();
@@ -375,7 +353,6 @@ void ai_matte_update(void *data, obs_data_t *settings)
 
         bool need_load = !ctx->engine_created
             || ctx->model_path != ctx->loaded_model_path;
-        // If engine exists and is ready and path matches, nothing to do.
         if (ctx->engine_created && ctx->engine
             && ctx->engine->isReady()
             && ctx->model_path == ctx->loaded_model_path) {
@@ -383,7 +360,7 @@ void ai_matte_update(void *data, obs_data_t *settings)
         }
         if (need_load) {
             {
-                std::lock_guard<std::mutex> lock(ctx->mtx);
+                std::lock_guard<std::mutex> lock(ctx->worker_mtx);
                 ctx->pending_model_path = ctx->model_path;
                 ctx->model_load_requested = true;
             }
@@ -391,9 +368,80 @@ void ai_matte_update(void *data, obs_data_t *settings)
             blog(LOG_INFO, "[DanceHAP] MatteEngine: model load requested (async)");
         }
     }
-    // If matte disabled, just stop feeding input — engine stays loaded.
 #endif
 }
+
+#ifdef DANCEHAP_HAVE_OBS
+/// Capture the target source's video into ctx->inputBGRA.
+/// Called from video_render (render thread).
+/// Follows the getRGBAFromStageSurface pattern from obs-backgroundremoval.
+static bool captureTargetToInputBGRA(ai_matte_context *ctx)
+{
+    obs_source_t *target = obs_filter_get_target(ctx->source);
+    if (!target) return false;
+
+    uint32_t width = obs_source_get_base_width(target);
+    uint32_t height = obs_source_get_base_height(target);
+    if (width == 0 || height == 0) return false;
+
+    // Render the target into our texrender
+    gs_texrender_reset(ctx->texrender);
+    if (!gs_texrender_begin(ctx->texrender, width, height)) {
+        return false;
+    }
+    struct vec4 background;
+    vec4_zero(&background);
+    gs_clear(GS_CLEAR_COLOR, &background, 0.0f, 0);
+    gs_ortho(0.0f, static_cast<float>(width), 0.0f,
+             static_cast<float>(height), -100.0f, 100.0f);
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+    obs_source_video_render(target);
+    gs_blend_state_pop();
+    gs_texrender_end(ctx->texrender);
+
+    // Stage the texture (GPU → CPU copy)
+    gs_texture_t *tex = gs_texrender_get_texture(ctx->texrender);
+    if (!tex) return false;
+
+    // Recreate stagesurface if dimensions changed
+    if (ctx->stagesurface &&
+        (ctx->stagesurface_w != width || ctx->stagesurface_h != height)) {
+        gs_stagesurface_destroy(ctx->stagesurface);
+        ctx->stagesurface = nullptr;
+    }
+    if (!ctx->stagesurface) {
+        ctx->stagesurface = gs_stagesurface_create(width, height, GS_BGRA);
+        ctx->stagesurface_w = width;
+        ctx->stagesurface_h = height;
+    }
+
+    gs_stage_texture(ctx->stagesurface, tex);
+
+    // Map the staged surface to get CPU access
+    uint8_t *video_data;
+    uint32_t linesize;
+    if (!gs_stagesurface_map(ctx->stagesurface, &video_data, &linesize)) {
+        return false;
+    }
+
+    // Copy frame data respecting linesize → packed BGRA
+    {
+        std::lock_guard<std::mutex> lock(ctx->inputBGRALock);
+        ctx->inputBGRA.resize(static_cast<size_t>(width) * height * 4);
+        for (uint32_t row = 0; row < height; ++row) {
+            memcpy(ctx->inputBGRA.data() + static_cast<size_t>(row) * width * 4,
+                   video_data + static_cast<size_t>(row) * linesize,
+                   static_cast<size_t>(width) * 4);
+        }
+        ctx->input_w = width;
+        ctx->input_h = height;
+    }
+
+    gs_stagesurface_unmap(ctx->stagesurface);
+    return true;
+}
+#endif
 
 void ai_matte_video_tick(void *data, float /*seconds*/)
 {
@@ -402,44 +450,41 @@ void ai_matte_video_tick(void *data, float /*seconds*/)
 
 #ifdef DANCEHAP_HAVE_OBS
     if (!ctx->matte_enabled) return;
-
-    obs_source_t *target = obs_filter_get_target(ctx->source);
-    if (!target) return;
-
-    obs_source_frame *frame = obs_source_get_frame(target);
-    if (!frame) return;
-
-    uint32_t w = frame->width;
-    uint32_t h = frame->height;
+#endif
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    if (w > 0 && h > 0 && frame->data[0]) {
-        // 1. Copy frame → input buffer (non-blocking, ~0.1 ms for 720p).
-        size_t size = static_cast<size_t>(w) * h * 4;
-        {
-            std::lock_guard<std::mutex> lock(ctx->mtx);
-            ctx->input_buffer.resize(size);
-            std::memcpy(ctx->input_buffer.data(), frame->data[0], size);
-            ctx->input_w = w;
-            ctx->input_h = h;
-            ctx->input_ready = true;
-        }
-        ctx->cv.notify_one();
-
-        // 2. If output is ready and dims match → apply in-place on the OBS
-        //    frame so video_render (pass-through) shows the matted result.
-        {
-            std::lock_guard<std::mutex> lock(ctx->mtx);
-            if (ctx->output_ready &&
-                ctx->output_w == w && ctx->output_h == h) {
-                std::memcpy(frame->data[0], ctx->output_buffer.data(), size);
-            }
-        }
+    // Try-lock inputBGRALock — don't block the render thread
+    std::vector<uint8_t> imageBGRA;
+    uint32_t w, h;
+    {
+        std::unique_lock<std::mutex> lock(ctx->inputBGRALock, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        if (ctx->inputBGRA.empty()) return;
+        imageBGRA = ctx->inputBGRA;  // copy
+        w = ctx->input_w;
+        h = ctx->input_h;
     }
-#endif // DANCEHAP_HAVE_ONNXRUNTIME
 
-    obs_source_release_frame(target, frame);
-#endif // DANCEHAP_HAVE_OBS
+    if (!ctx->engine_created || !ctx->engine || !ctx->engine->isReady())
+        return;
+    if (w == 0 || h == 0) return;
+
+    // Run inference
+    dancehap::ImageFrame img;
+    img.width  = static_cast<int>(w);
+    img.height = static_cast<int>(h);
+    img.data_rgba = imageBGRA.data();
+
+    dancehap::MatteMask mask = ctx->engine->infer(img);
+
+    if (mask.width == static_cast<int>(w) && mask.height == static_cast<int>(h)) {
+        std::lock_guard<std::mutex> lock(ctx->outputLock);
+        ctx->outputMask = std::move(mask.alpha);
+        ctx->mask_w = w;
+        ctx->mask_h = h;
+        ctx->mask_ready = true;
+    }
+#endif
 }
 
 void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
@@ -448,16 +493,75 @@ void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
     if (!ctx) return;
 
 #ifdef DANCEHAP_HAVE_OBS
-    // Pass-through render. The frame data was modified in-place by
-    // video_tick (if a processed output was ready), so the default render
-    // shows the matted frame. No CUSTOM_DRAW needed — OBS wraps this in
-    // the default effect's Draw technique.
-    obs_source_t *target = obs_filter_get_target(ctx->source);
-    if (target) {
-        obs_source_default_render(target);
+    // 1. Capture the target source video into inputBGRA (for next tick's inference)
+    if (ctx->matte_enabled) {
+        captureTargetToInputBGRA(ctx);
     }
-#else
-    // Stub mode: no OBS graphics API — safe no-op.
+
+    // 2. If matte is disabled or no mask ready, pass through the target
+    obs_source_t *target = obs_filter_get_target(ctx->source);
+    if (!ctx->matte_enabled || !ctx->mask_ready || !target) {
+        obs_source_skip_video_filter(ctx->source);
+        return;
+    }
+
+    // 3. Apply the mask via process_filter_begin/end with a shader effect.
+    //    For now, we use the default effect which supports alpha blending.
+    //    A custom effect shader would go here in a future iteration.
+    //
+    //    The mask is in outputMask (float 0-1, w*h elements).
+    //    We create an alpha texture from it and let OBS blend it.
+    uint32_t mask_w, mask_h;
+    std::vector<uint8_t> alpha_bytes;
+    {
+        std::lock_guard<std::mutex> lock(ctx->outputLock);
+        if (ctx->outputMask.empty()) {
+            obs_source_skip_video_filter(ctx->source);
+            return;
+        }
+        mask_w = ctx->mask_w;
+        mask_h = ctx->mask_h;
+        alpha_bytes.resize(ctx->outputMask.size());
+        for (size_t i = 0; i < ctx->outputMask.size(); ++i) {
+            float v = ctx->outputMask[i];
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            alpha_bytes[i] = static_cast<uint8_t>(v * 255.0f);
+        }
+    }
+
+    // Create alpha texture (R8, single channel)
+    gs_texture_t *alphaTexture = gs_texture_create(
+        mask_w, mask_h, GS_R8, 1,
+        const_cast<const uint8_t **>(&alpha_bytes.data()), 0);
+    if (!alphaTexture) {
+        blog(LOG_WARNING, "[DanceHAP] Failed to create alpha texture");
+        obs_source_skip_video_filter(ctx->source);
+        return;
+    }
+
+    // Begin filter rendering
+    if (!obs_source_process_filter_begin(ctx->source, GS_RGBA,
+                                          OBS_ALLOW_DIRECT_RENDERING)) {
+        gs_texture_destroy(alphaTexture);
+        obs_source_skip_video_filter(ctx->source);
+        return;
+    }
+
+    // Use the default effect's "Draw" technique with alpha masking.
+    // The alpha texture modulates the source's alpha channel.
+    gs_eparam_t *imageParam = gs_effect_get_param_by_name(
+        gs_effect_get_default(), "image");
+    gs_effect_set_texture(imageParam, alphaTexture);
+
+    // Draw the target through the filter
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+    obs_source_process_filter_end(ctx->source, gs_effect_get_default(), 0, 0);
+
+    gs_blend_state_pop();
+    gs_texture_destroy(alphaTexture);
 #endif
 }
 
@@ -467,7 +571,7 @@ void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
 
 struct obs_source_info build_ai_matte_info()
 {
-    struct obs_source_info info = {};   // zero-initialise
+    struct obs_source_info info = {};
 
     info.id           = AI_MATTE_FILTER_ID;
     info.type         = OBS_SOURCE_TYPE_FILTER;
@@ -482,8 +586,6 @@ struct obs_source_info build_ai_matte_info()
     info.video_tick     = ai_matte_video_tick;
     info.video_render   = ai_matte_video_render;
 
-    // Filters typically do not define get_width/get_height — OBS uses the
-    // target source's dimensions. In the stub struct these are left null.
     info.get_width      = nullptr;
     info.get_height     = nullptr;
 
@@ -510,15 +612,6 @@ void register_ai_matte_filter(void)
     obs_register_source(info);
 }
 
-// ---------------------------------------------------------------------------
-// Matte frame processing (testable in stub mode)
-// ---------------------------------------------------------------------------
-// This function applies the full matting pipeline to a BGRA frame:
-//   1. If a MatteEngine is provided and ready, run inference → alpha mask.
-//   2. Apply the mask to the frame's alpha channel.
-//   3. Return the processed frame (BGRA with alpha).
-// If no engine or engine not ready, returns the input unmodified (pass-through).
-
 const void *ai_matte_filter_process_frame(const void *input_data,
                                            uint32_t width,
                                            uint32_t height,
@@ -527,14 +620,5 @@ const void *ai_matte_filter_process_frame(const void *input_data,
 {
     if (out_width)  *out_width  = width;
     if (out_height) *out_height = height;
-
-#ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    // If an engine is available, apply the matting pipeline.
-    // Note: in this standalone function we don't have a context, so the
-    // actual integration happens in ai_matte_video_tick via the context's
-    // engine. This function remains a pass-through for unit tests.
-#endif
-
-    // Pass-through: output = input, dimensions unchanged.
     return input_data;
 }
