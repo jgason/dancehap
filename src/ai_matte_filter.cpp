@@ -4,26 +4,45 @@
 // ai_matte_filter.cpp — OBS filter that applies AI-based matting to a webcam
 // source.
 //
-// Phase 2.0: skeleton — the filter is registered as an OBS_SOURCE_TYPE_FILTER
-// with OBS_SOURCE_CAP_VIDEO. It is a pass-through: video_render draws the
-// target (parent) source without modification. The actual matting inference
-// (RVM / MediaPipe) arrives in Phase 2.2 / 2.4.
+// Phase 2.0: skeleton — OBS_SOURCE_TYPE_FILTER, pass-through render.
+// Phase 2.2: MatteEngine ONNX inference integrated in video_tick.
+// Phase 2.5: Properties UI (enable, model path, provider, quality).
+// Phase 2.5b (v0.4.7): ASYNC inference + model load on a worker thread.
+//   Fixes:
+//     (1) Freeze on Enable — loadModel() was synchronous in update(), blocking
+//         the OBS graphics thread for several seconds (DirectML EP init).
+//     (2) Freeze during playback — engine.infer() was synchronous in
+//         video_tick, blocking the render thread ~30 ms/frame at 256px.
+//     (3) Matte invisible — video_render did a pure pass-through and never
+//         used processed_frame. Now video_tick applies the processed alpha
+//         in-place on the OBS frame before render.
 //
-// In stub mode (no real OBS), the filter compiles and the obs_source_info is
-// inspectable by unit tests. video_tick and video_render are safe no-ops.
+// Architecture:
+//   video_tick (render thread):
+//     1. Copy OBS frame → input_buffer (non-blocking, ~0.1 ms for 720p).
+//     2. Notify worker thread.
+//     3. If output_buffer ready and same dims → memcpy to frame->data[0].
+//     4. release_frame.
+//   worker thread:
+//     1. Wait on condition_variable (input ready OR model load requested).
+//     2. If model load requested → engine.loadModel() (blocking, off-thread).
+//     3. If input ready → preprocess + infer + postprocess → output_buffer.
+//   video_render (render thread):
+//     obs_source_default_render(target) — renders the frame that video_tick
+//     may have modified in-place. No CUSTOM_DRAW needed.
 //
 // Reference: obs-studio/plugins/obs-filters/ (e.g. noise-filter.c, mask-filter.c)
-//   • A filter has type OBS_SOURCE_TYPE_FILTER, output_flags = OBS_SOURCE_VIDEO.
-//   • It is applied on top of an existing video source (webcam).
-//   • The filter's video_render() draws the target source via
-//     obs_source_default_render() when OBS_SOURCE_CUSTOM_DRAW is not set.
 
 #include "ai_matte_filter.hpp"
 #include "dancehap/version.h"
 #include "matte_engine.hpp"
 
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 
 // ---------------------------------------------------------------------------
 // Per-instance context
@@ -63,7 +82,7 @@ std::vector<uint8_t> apply_alpha_mask_to_bgra(
 } // namespace dancehap
 
 // ---------------------------------------------------------------------------
-// Per-instance context
+// Per-instance context (with worker thread for async inference)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -82,10 +101,108 @@ struct ai_matte_context {
     obs_source_t *source = nullptr;   // the filter's own OBS source handle
 #endif
 
-    // Last processed frame (for render). Owned by this context.
-    std::vector<uint8_t> processed_frame;
-    uint32_t processed_width  = 0;
-    uint32_t processed_height = 0;
+    // ---- Worker thread (async inference + model load) -------------------
+
+    std::thread worker;
+    std::mutex mtx;                   // protects all shared buffers below
+    std::condition_variable cv;
+    std::atomic<bool> stop{false};
+
+    // Input: latest frame copied from OBS (render thread writes, worker reads)
+    std::vector<uint8_t> input_buffer;
+    uint32_t input_w = 0;
+    uint32_t input_h = 0;
+    bool input_ready = false;
+
+    // Output: last processed frame (worker writes, render thread reads)
+    std::vector<uint8_t> output_buffer;
+    uint32_t output_w = 0;
+    uint32_t output_h = 0;
+    bool output_ready = false;
+
+    // Model load request (render thread sets, worker executes)
+    std::string pending_model_path;
+    bool model_load_requested = false;
+
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    /// Worker thread main loop.
+    void worker_loop()
+    {
+        while (!stop.load()) {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [this] {
+                return stop.load() || input_ready || model_load_requested;
+            });
+
+            if (stop.load()) break;
+
+            // --- Handle model load request (blocking, on worker thread) ---
+            if (model_load_requested) {
+                std::string path = pending_model_path;
+                model_load_requested = false;
+                lock.unlock();
+
+                blog(LOG_INFO, "[DanceHAP] MatteEngine: loading model '%s' (async)",
+                     path.c_str());
+                if (!engine.loadModel(path)) {
+                    blog(LOG_WARNING, "[DanceHAP] MatteEngine: failed to load '%s'",
+                         path.c_str());
+                } else {
+                    loaded_model_path = path;
+                    blog(LOG_INFO, "[DanceHAP] MatteEngine: model loaded (async)");
+                }
+                continue;  // re-loop to check for new work
+            }
+
+            // --- Handle inference request ---
+            if (input_ready) {
+                std::vector<uint8_t> input = std::move(input_buffer);
+                uint32_t w = input_w;
+                uint32_t h = input_h;
+                input_ready = false;
+                lock.unlock();
+
+                // Run inference only if engine is ready.
+                if (engine.isReady() && w > 0 && h > 0) {
+                    dancehap::ImageFrame img;
+                    img.width  = static_cast<int>(w);
+                    img.height = static_cast<int>(h);
+                    img.data_rgba = input.data();
+
+                    dancehap::MatteMask mask = engine.infer(img);
+
+                    // Apply mask to the BGRA frame.
+                    std::vector<uint8_t> processed =
+                        dancehap::apply_alpha_mask_to_bgra(
+                            input.data(), w, h, mask.alpha);
+
+                    // Publish to output buffer.
+                    {
+                        std::lock_guard<std::mutex> olock(mtx);
+                        output_buffer = std::move(processed);
+                        output_w = w;
+                        output_h = h;
+                        output_ready = true;
+                    }
+                }
+            }
+        }
+    }
+
+    void start_worker()
+    {
+        if (worker.joinable()) return;  // already running
+        stop.store(false);
+        worker = std::thread([this] { worker_loop(); });
+    }
+
+    void stop_worker()
+    {
+        stop.store(true);
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+#endif // DANCEHAP_HAVE_ONNXRUNTIME
 };
 
 // ---------------------------------------------------------------------------
@@ -103,7 +220,11 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
 #ifdef DANCEHAP_HAVE_OBS
     ctx->source = source;
 #endif
-    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created");
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    ctx->start_worker();
+#endif
+    blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (async worker v%s)",
+         DANCEHAP_VERSION_STRING);
     return ctx;
 }
 
@@ -111,6 +232,9 @@ void ai_matte_destroy(void *data)
 {
     auto *ctx = static_cast<ai_matte_context *>(data);
     if (!ctx) return;
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    ctx->stop_worker();
+#endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter destroyed");
     delete ctx;
 }
@@ -183,7 +307,7 @@ void ai_matte_update(void *data, obs_data_t *settings)
     int res = (quality == 0) ? 192 : (quality == 2) ? 512 : 256;
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    // Update engine config.
+    // Update engine config (non-blocking, just sets a struct).
     dancehap::MatteModelConfig cfg;
     cfg.input_width  = res;
     cfg.input_height = res;
@@ -196,22 +320,21 @@ void ai_matte_update(void *data, obs_data_t *settings)
                           dancehap::ExecutionProvider::Auto;
     ctx->engine.setDesiredProvider(ep);
 
-    // (Re)load model if enabled and path changed.
+    // Request async model load if enabled and path changed.
+    // The worker thread handles the actual loadModel() call so the OBS
+    // graphics thread never blocks.
     if (enable && !ctx->model_path.empty()) {
         if (!ctx->engine.isReady() || ctx->model_path != ctx->loaded_model_path) {
-            if (!ctx->engine.loadModel(ctx->model_path)) {
-                blog(LOG_WARNING, "[DanceHAP] MatteEngine: failed to load '%s'",
-                     ctx->model_path.c_str());
-                ctx->matte_enabled = false;
-            } else {
-                ctx->loaded_model_path = ctx->model_path;
+            {
+                std::lock_guard<std::mutex> lock(ctx->mtx);
+                ctx->pending_model_path = ctx->model_path;
+                ctx->model_load_requested = true;
             }
+            ctx->cv.notify_one();
+            blog(LOG_INFO, "[DanceHAP] MatteEngine: model load requested (async)");
         }
     }
-    // Disable engine if matte toggled off or path cleared.
-    if (!enable && ctx->engine.isReady()) {
-        // Engine stays loaded but matte_enabled=false → video_tick skips it.
-    }
+    // If matte disabled, just stop feeding input — engine stays loaded.
 #endif
 }
 
@@ -223,11 +346,9 @@ void ai_matte_video_tick(void *data, float /*seconds*/)
 #ifdef DANCEHAP_HAVE_OBS
     if (!ctx->matte_enabled) return;
 
-    // Get the target (parent) source — the webcam we're filtering.
     obs_source_t *target = obs_filter_get_target(ctx->source);
     if (!target) return;
 
-    // Get the latest frame from the target source (async video API).
     obs_source_frame *frame = obs_source_get_frame(target);
     if (!frame) return;
 
@@ -235,24 +356,27 @@ void ai_matte_video_tick(void *data, float /*seconds*/)
     uint32_t h = frame->height;
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
-    // Run matting inference if the engine is ready.
-    if (ctx->engine.isReady() && w > 0 && h > 0) {
-        // Build ImageFrame. OBS frames are typically BGRA or RGBA.
-        // We pass the data as RGBA (the preprocess handles normalization).
-        dancehap::ImageFrame img;
-        img.width  = static_cast<int>(w);
-        img.height = static_cast<int>(h);
-        img.data_rgba = frame->data[0];  // plane 0
+    if (w > 0 && h > 0 && frame->data[0]) {
+        // 1. Copy frame → input buffer (non-blocking, ~0.1 ms for 720p).
+        size_t size = static_cast<size_t>(w) * h * 4;
+        {
+            std::lock_guard<std::mutex> lock(ctx->mtx);
+            ctx->input_buffer.resize(size);
+            std::memcpy(ctx->input_buffer.data(), frame->data[0], size);
+            ctx->input_w = w;
+            ctx->input_h = h;
+            ctx->input_ready = true;
+        }
+        ctx->cv.notify_one();
 
-        dancehap::MatteMask mask = ctx->engine.infer(img);
-        if (mask.width == static_cast<int>(w) && mask.height == static_cast<int>(h)) {
-            // Apply mask to the frame's alpha channel.
-            // Note: OBS frames may not have alpha. We produce a processed
-            // copy that the render callback will use.
-            ctx->processed_frame = dancehap::apply_alpha_mask_to_bgra(
-                frame->data[0], w, h, mask.alpha);
-            ctx->processed_width  = w;
-            ctx->processed_height = h;
+        // 2. If output is ready and dims match → apply in-place on the OBS
+        //    frame so video_render (pass-through) shows the matted result.
+        {
+            std::lock_guard<std::mutex> lock(ctx->mtx);
+            if (ctx->output_ready &&
+                ctx->output_w == w && ctx->output_h == h) {
+                std::memcpy(frame->data[0], ctx->output_buffer.data(), size);
+            }
         }
     }
 #endif // DANCEHAP_HAVE_ONNXRUNTIME
@@ -267,15 +391,10 @@ void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
     if (!ctx) return;
 
 #ifdef DANCEHAP_HAVE_OBS
-    // Pass-through: draw the target (parent) source using OBS's default
-    // render path. Without OBS_SOURCE_CUSTOM_DRAW, OBS wraps our
-    // video_render() in the default effect's Draw technique — we just need
-    // to call obs_source_default_render() on the filter's target.
-    //
-    // NOTE: obs_source_default_render() is the standard way for a filter to
-    // pass through the parent source's video. It binds the target texture
-    // and draws it. This is the exact pattern used by simple pass-through
-    // filters in obs-studio (e.g. crop-filter.c, mask-filter.c).
+    // Pass-through render. The frame data was modified in-place by
+    // video_tick (if a processed output was ready), so the default render
+    // shows the matted frame. No CUSTOM_DRAW needed — OBS wraps this in
+    // the default effect's Draw technique.
     obs_source_t *target = obs_filter_get_target(ctx->source);
     if (target) {
         obs_source_default_render(target);
