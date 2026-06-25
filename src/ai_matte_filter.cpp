@@ -245,10 +245,15 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
         if (!ctx->matte_effect) {
             blog(LOG_WARNING, "[DanceHAP] Failed to load matte effect from '%s', trying absolute path",
                  effect_path);
-            // Try absolute path (Windows default OBS install)
+            // Try absolute paths (both user-level and system-level OBS installs)
             ctx->matte_effect = gs_effect_create_from_file(
-                "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+                "C:\\ProgramData\\obs-studio\\plugins\\dancehap\\data\\effects\\mask_alpha_filter.effect",
                 nullptr);
+            if (!ctx->matte_effect) {
+                ctx->matte_effect = gs_effect_create_from_file(
+                    "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+                    nullptr);
+            }
         }
         if (ctx->matte_effect) {
             blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded");
@@ -258,10 +263,15 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
         bfree(effect_path);
     } else {
         blog(LOG_WARNING, "[DanceHAP] obs_module_file() returned null for matte effect");
-        // Try absolute path as last resort
+        // Try absolute paths as last resort
         ctx->matte_effect = gs_effect_create_from_file(
-            "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+            "C:\\ProgramData\\obs-studio\\plugins\\dancehap\\data\\effects\\mask_alpha_filter.effect",
             nullptr);
+        if (!ctx->matte_effect) {
+            ctx->matte_effect = gs_effect_create_from_file(
+                "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+                nullptr);
+        }
         if (ctx->matte_effect) {
             blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded (absolute path fallback)");
         }
