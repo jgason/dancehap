@@ -122,6 +122,7 @@ struct ai_matte_context {
     gs_stagesurf_t *stagesurface = nullptr;
     uint32_t stagesurface_w = 0;
     uint32_t stagesurface_h = 0;
+    gs_effect_t *matte_effect = nullptr;  // custom effect for alpha masking
 #endif
 
     // Input buffer (render thread writes, worker reads)
@@ -233,6 +234,21 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
 
     // Create texrender (will be resized on first render)
     ctx->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+
+    // Load the custom matte effect shader
+    char *effect_path = obs_module_file("effects/mask_alpha_filter.effect");
+    if (effect_path) {
+        ctx->matte_effect = gs_effect_create_from_file(effect_path, nullptr);
+        if (!ctx->matte_effect) {
+            blog(LOG_WARNING, "[DanceHAP] Failed to load matte effect shader: %s",
+                 effect_path);
+        } else {
+            blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded");
+        }
+        bfree(effect_path);
+    } else {
+        blog(LOG_WARNING, "[DanceHAP] Could not find matte effect shader file");
+    }
 #endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (v%s)",
          DANCEHAP_VERSION_STRING);
@@ -254,6 +270,10 @@ void ai_matte_destroy(void *data)
     if (ctx->texrender) {
         gs_texrender_destroy(ctx->texrender);
         ctx->texrender = nullptr;
+    }
+    if (ctx->matte_effect) {
+        gs_effect_destroy(ctx->matte_effect);
+        ctx->matte_effect = nullptr;
     }
 #endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter destroyed");
@@ -505,12 +525,8 @@ void ai_matte_video_render(void *data, gs_effect_t *effect)
         return;
     }
 
-    // 3. Apply the mask via process_filter_begin/end with a shader effect.
-    //    For now, we use the default effect which supports alpha blending.
-    //    A custom effect shader would go here in a future iteration.
-    //
-    //    The mask is in outputMask (float 0-1, w*h elements).
-    //    We create an alpha texture from it and let OBS blend it.
+    // 3. Apply the mask via process_filter_begin/end with the custom matte
+    //    effect shader. The shader multiplies the source alpha by the mask.
     uint32_t mask_w, mask_h;
     std::vector<uint8_t> alpha_bytes;
     {
@@ -540,7 +556,15 @@ void ai_matte_video_render(void *data, gs_effect_t *effect)
         return;
     }
 
-    // Begin filter rendering
+    // If the custom effect failed to load, fall back to pass-through.
+    if (!ctx->matte_effect) {
+        gs_texture_destroy(alphaTexture);
+        obs_source_skip_video_filter(ctx->source);
+        return;
+    }
+
+    // Begin filter rendering. OBS sets up the "image" param with the
+    // source texture internally.
     if (!obs_source_process_filter_begin(ctx->source, GS_RGBA,
                                           OBS_ALLOW_DIRECT_RENDERING)) {
         gs_texture_destroy(alphaTexture);
@@ -548,15 +572,17 @@ void ai_matte_video_render(void *data, gs_effect_t *effect)
         return;
     }
 
-    // Use the effect passed by OBS (default effect with Draw technique).
-    gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
-    gs_effect_set_texture(imageParam, alphaTexture);
+    // Set the "alphamask" param on our custom effect.
+    gs_eparam_t *alphamaskParam =
+        gs_effect_get_param_by_name(ctx->matte_effect, "alphamask");
+    gs_effect_set_texture(alphamaskParam, alphaTexture);
 
-    // Draw the target through the filter with alpha blending.
+    // Draw with the custom effect's "Draw" technique.
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
-    obs_source_process_filter_end(ctx->source, effect, 0, 0);
+    obs_source_process_filter_tech_end(ctx->source, ctx->matte_effect,
+                                        0, 0, "Draw");
 
     gs_blend_state_pop();
     gs_texture_destroy(alphaTexture);
