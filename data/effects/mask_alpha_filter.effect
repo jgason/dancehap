@@ -33,7 +33,10 @@ float4 PSAlphaMaskRGBA(VertDataOut v_in) : TARGET
 	inputRGBA.rgb = max(float3(0.0, 0.0, 0.0), inputRGBA.rgb / inputRGBA.a);
 
 	float4 outputRGBA;
-	float a = (1.0 - alphamask.Sample(textureSampler, v_in.uv).r) * inputRGBA.a;
+	// RVM produces: 1 = person (opaque), 0 = background (transparent).
+	// We do NOT invert (unlike obs-backgroundremoval which inverts in
+	// processImageForBackground before the shader).
+	float a = alphamask.Sample(textureSampler, v_in.uv).r * inputRGBA.a;
 	outputRGBA.rgb = inputRGBA.rgb * a;
 	outputRGBA.a = a;
 	return outputRGBA;
