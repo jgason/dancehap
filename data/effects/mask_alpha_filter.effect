@@ -1,59 +1,49 @@
-// SPDX-License-Identifier: MIT
-// SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
-//
-// mask_alpha_filter.effect — Shader effect for DanceHAP Matte filter.
-//
-// Applies an alpha mask (R8 texture) to the source video (RGBA).
-// The mask modulates the source's alpha channel: where mask=1 the source
-// is fully opaque, where mask=0 the source becomes transparent.
-//
-// Inspired by obs-backgroundremoval's mask_alpha_filter.effect (royshil),
-// simplified: no blur background, no focal blur, just alpha masking.
-
 uniform float4x4 ViewProj;
 
-uniform texture2d image;      // input RGBA (source video, set by OBS)
-uniform texture2d alphamask; // alpha mask (R8, set by DanceHAP)
+uniform texture2d image;     // input RGBA
+uniform texture2d alphamask; // alpha mask (R8)
 
 sampler_state textureSampler {
-    Filter    = Linear;
-    AddressU  = Clamp;
-    AddressV  = Clamp;
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
 };
 
 struct VertDataIn {
-    float4 pos : POSITION;
-    float2 uv  : TEXCOORD0;
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
 };
 
 struct VertDataOut {
-    float4 pos : POSITION;
-    float2 uv  : TEXCOORD0;
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
 };
 
 VertDataOut VSDefault(VertDataIn v_in)
 {
-    VertDataOut vert_out;
-    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
-    vert_out.uv  = v_in.uv;
-    return vert_out;
+	VertDataOut vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
 }
 
 float4 PSAlphaMaskRGBA(VertDataOut v_in) : TARGET
 {
-    float4 inputRGBA = image.Sample(textureSampler, v_in.uv);
-    float  a = alphamask.Sample(textureSampler, v_in.uv).r * inputRGBA.a;
-    float4 outputRGBA;
-    outputRGBA.rgb = inputRGBA.rgb * a;
-    outputRGBA.a   = a;
-    return outputRGBA;
+	float4 inputRGBA = image.Sample(textureSampler, v_in.uv);
+	inputRGBA.rgb = max(float3(0.0, 0.0, 0.0), inputRGBA.rgb / inputRGBA.a);
+
+	float4 outputRGBA;
+	float a = (1.0 - alphamask.Sample(textureSampler, v_in.uv).r) * inputRGBA.a;
+	outputRGBA.rgb = inputRGBA.rgb * a;
+	outputRGBA.a = a;
+	return outputRGBA;
 }
 
 technique Draw
 {
-    pass
-    {
-        vertex_shader = VSDefault(v_in);
-        pixel_shader  = PSAlphaMaskRGBA(v_in);
-    }
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSAlphaMaskRGBA(v_in);
+	}
 }
