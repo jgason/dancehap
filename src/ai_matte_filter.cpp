@@ -487,7 +487,7 @@ void ai_matte_video_tick(void *data, float /*seconds*/)
 #endif
 }
 
-void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
+void ai_matte_video_render(void *data, gs_effect_t *effect)
 {
     auto *ctx = static_cast<ai_matte_context *>(data);
     if (!ctx) return;
@@ -531,9 +531,9 @@ void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
     }
 
     // Create alpha texture (R8, single channel)
+    const uint8_t *alpha_ptr = alpha_bytes.data();
     gs_texture_t *alphaTexture = gs_texture_create(
-        mask_w, mask_h, GS_R8, 1,
-        const_cast<const uint8_t **>(&alpha_bytes.data()), 0);
+        mask_w, mask_h, GS_R8, 1, &alpha_ptr, 0);
     if (!alphaTexture) {
         blog(LOG_WARNING, "[DanceHAP] Failed to create alpha texture");
         obs_source_skip_video_filter(ctx->source);
@@ -548,17 +548,15 @@ void ai_matte_video_render(void *data, gs_effect_t * /*effect*/)
         return;
     }
 
-    // Use the default effect's "Draw" technique with alpha masking.
-    // The alpha texture modulates the source's alpha channel.
-    gs_eparam_t *imageParam = gs_effect_get_param_by_name(
-        gs_effect_get_default(), "image");
+    // Use the effect passed by OBS (default effect with Draw technique).
+    gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
     gs_effect_set_texture(imageParam, alphaTexture);
 
-    // Draw the target through the filter
+    // Draw the target through the filter with alpha blending.
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
-    obs_source_process_filter_end(ctx->source, gs_effect_get_default(), 0, 0);
+    obs_source_process_filter_end(ctx->source, effect, 0, 0);
 
     gs_blend_state_pop();
     gs_texture_destroy(alphaTexture);
