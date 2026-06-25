@@ -235,19 +235,36 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
     // Create texrender (will be resized on first render)
     ctx->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 
-    // Load the custom matte effect shader
+    // Load the custom matte effect shader.
+    // obs_module_file() returns a relative path on some OBS installs,
+    // which gs_effect_create_from_file() cannot resolve. Try both
+    // the module-relative path and a hardcoded absolute path as fallback.
     char *effect_path = obs_module_file("effects/mask_alpha_filter.effect");
     if (effect_path) {
         ctx->matte_effect = gs_effect_create_from_file(effect_path, nullptr);
         if (!ctx->matte_effect) {
-            blog(LOG_WARNING, "[DanceHAP] Failed to load matte effect shader: %s",
+            blog(LOG_WARNING, "[DanceHAP] Failed to load matte effect from '%s', trying absolute path",
                  effect_path);
-        } else {
+            // Try absolute path (Windows default OBS install)
+            ctx->matte_effect = gs_effect_create_from_file(
+                "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+                nullptr);
+        }
+        if (ctx->matte_effect) {
             blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded");
+        } else {
+            blog(LOG_ERROR, "[DanceHAP] Could not load matte effect shader from any path");
         }
         bfree(effect_path);
     } else {
-        blog(LOG_WARNING, "[DanceHAP] Could not find matte effect shader file");
+        blog(LOG_WARNING, "[DanceHAP] obs_module_file() returned null for matte effect");
+        // Try absolute path as last resort
+        ctx->matte_effect = gs_effect_create_from_file(
+            "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
+            nullptr);
+        if (ctx->matte_effect) {
+            blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded (absolute path fallback)");
+        }
     }
 #endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (v%s)",
