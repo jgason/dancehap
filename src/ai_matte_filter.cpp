@@ -232,50 +232,13 @@ void *ai_matte_create(obs_data_t * /*settings*/, obs_source_t *source)
 #ifdef DANCEHAP_HAVE_OBS
     ctx->source = source;
 
-    // Create texrender (will be resized on first render)
+    // Create texrender (will be resized on first render).
+    // NOTE: gs_texrender_create() requires the graphics context, which IS
+    // active during create() (OBS enters graphics before calling create).
     ctx->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
-
-    // Load the custom matte effect shader.
-    // obs_module_file() returns a relative path on some OBS installs,
-    // which gs_effect_create_from_file() cannot resolve. Try both
-    // the module-relative path and a hardcoded absolute path as fallback.
-    char *effect_path = obs_module_file("effects/mask_alpha_filter.effect");
-    if (effect_path) {
-        ctx->matte_effect = gs_effect_create_from_file(effect_path, nullptr);
-        if (!ctx->matte_effect) {
-            blog(LOG_WARNING, "[DanceHAP] Failed to load matte effect from '%s', trying absolute path",
-                 effect_path);
-            // Try absolute paths (both user-level and system-level OBS installs)
-            ctx->matte_effect = gs_effect_create_from_file(
-                "C:\\ProgramData\\obs-studio\\plugins\\dancehap\\data\\effects\\mask_alpha_filter.effect",
-                nullptr);
-            if (!ctx->matte_effect) {
-                ctx->matte_effect = gs_effect_create_from_file(
-                    "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
-                    nullptr);
-            }
-        }
-        if (ctx->matte_effect) {
-            blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded");
-        } else {
-            blog(LOG_ERROR, "[DanceHAP] Could not load matte effect shader from any path");
-        }
-        bfree(effect_path);
-    } else {
-        blog(LOG_WARNING, "[DanceHAP] obs_module_file() returned null for matte effect");
-        // Try absolute paths as last resort
-        ctx->matte_effect = gs_effect_create_from_file(
-            "C:\\ProgramData\\obs-studio\\plugins\\dancehap\\data\\effects\\mask_alpha_filter.effect",
-            nullptr);
-        if (!ctx->matte_effect) {
-            ctx->matte_effect = gs_effect_create_from_file(
-                "C:\\Program Files\\obs-studio\\data\\obs-plugins\\dancehap\\effects\\mask_alpha_filter.effect",
-                nullptr);
-        }
-        if (ctx->matte_effect) {
-            blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded (absolute path fallback)");
-        }
-    }
+    // The effect shader is loaded lazily in update() (see below) because
+    // gs_effect_create_from_file() also needs the graphics context, and
+    // update() is called by OBS with graphics available.
 #endif
     blog(LOG_INFO, "[DanceHAP] ai_matte_filter created (v%s)",
          DANCEHAP_VERSION_STRING);
@@ -368,6 +331,35 @@ void ai_matte_update(void *data, obs_data_t *settings)
     ctx->model_path = model ? model : "";
 
     int res = (quality == 0) ? 192 : (quality == 2) ? 512 : 256;
+
+#ifdef DANCEHAP_HAVE_OBS
+    // Lazily load the effect shader on the first update() call.
+    // gs_effect_create_from_file() requires the graphics context to be
+    // active. In create() the context may not be fully ready, but in
+    // update() OBS guarantees graphics is available. We wrap the call
+    // in obs_enter_graphics()/obs_leave_graphics() to be safe.
+    // This follows the pattern from obs-backgroundremoval (background-filter.cpp).
+    if (!ctx->matte_effect) {
+        obs_enter_graphics();
+
+        char *effect_path = obs_module_file("effects/mask_alpha_filter.effect");
+        if (effect_path) {
+            ctx->matte_effect = gs_effect_create_from_file(effect_path, nullptr);
+            if (ctx->matte_effect) {
+                blog(LOG_INFO, "[DanceHAP] Matte effect shader loaded from '%s'",
+                     effect_path);
+            } else {
+                blog(LOG_ERROR, "[DanceHAP] Failed to load matte effect from '%s'",
+                     effect_path);
+            }
+            bfree(effect_path);
+        } else {
+            blog(LOG_ERROR, "[DanceHAP] obs_module_file() returned null for effect");
+        }
+
+        obs_leave_graphics();
+    }
+#endif
 
 #ifdef DANCEHAP_HAVE_ONNXRUNTIME
     dancehap::MatteModelConfig cfg;

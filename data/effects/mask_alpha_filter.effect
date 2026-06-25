@@ -1,7 +1,7 @@
 uniform float4x4 ViewProj;
 
-uniform texture2d image;     // input RGBA
-uniform texture2d alphamask; // alpha mask (R8)
+uniform texture2d image;     // input RGBA (source video, set by OBS)
+uniform texture2d alphamask; // alpha mask (R8, set by DanceHAP)
 
 sampler_state textureSampler {
 	Filter    = Linear;
