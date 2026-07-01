@@ -287,6 +287,10 @@ endif()
 # --- Compiler warnings --------------------------------------------------
 if(MSVC)
     target_compile_options(dancehap PRIVATE /W4 /permissive-)
+    # NOMINMAX: prevent Windows.h from defining min/max macros that
+    # conflict with std::min/std::max (causes C2589 on std::max).
+    target_compile_definitions(dancehap PRIVATE NOMINMAX)
+    target_compile_definitions(dancehap_objs PRIVATE NOMINMAX)
 else()
     target_compile_options(dancehap PRIVATE -Wall -Wextra -Wpedantic)
 endif()

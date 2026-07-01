@@ -648,21 +648,24 @@ struct MatteEngineImpl {
             OrtStatus *st = g_ort->SessionGetInputTypeInfo(session, i, &type_info);
             if (st) { g_ort->ReleaseStatus(st); return false; }
 
-            OrtTensorTypeAndShapeInfo *tensor_info;
-            st = g_ort->GetTensorTypeAndShape(type_info, &tensor_info);
+            // CastTypeInfoToTensorInfo: OrtTypeInfo* → OrtTensorTypeAndShapeInfo*
+            // (GetTensorTypeAndShape takes an OrtValue*, NOT OrtTypeInfo*)
+            const OrtTensorTypeAndShapeInfo *tensor_info_const;
+            st = g_ort->CastTypeInfoToTensorInfo(type_info, &tensor_info_const);
             if (st) { g_ort->ReleaseStatus(st); g_ort->ReleaseTypeInfo(type_info); return false; }
 
             size_t dim_count = 0;
-            g_ort->GetDimensionsCount(tensor_info, &dim_count);
+            g_ort->GetDimensionsCount(tensor_info_const, &dim_count);
             std::vector<int64_t> dims(dim_count);
-            g_ort->GetDimensions(tensor_info, dims.data(), dim_count);
+            g_ort->GetDimensions(tensor_info_const, dims.data(), dim_count);
 
             // Fix -1 (dynamic) to 1
             for (auto &d : dims) if (d < 0) d = 1;
 
             input_shapes.push_back(dims);
-            g_ort->ReleaseTensorTypeAndShapeInfo(tensor_info);
             g_ort->ReleaseTypeInfo(type_info);
+            // Note: CastTypeInfoToTensorInfo returns a borrowed reference,
+            // do NOT call ReleaseTensorTypeAndShapeInfo on it.
         }
 
         // Output shapes
@@ -671,19 +674,18 @@ struct MatteEngineImpl {
             OrtStatus *st = g_ort->SessionGetOutputTypeInfo(session, i, &type_info);
             if (st) { g_ort->ReleaseStatus(st); return false; }
 
-            OrtTensorTypeAndShapeInfo *tensor_info;
-            st = g_ort->GetTensorTypeAndShape(type_info, &tensor_info);
+            const OrtTensorTypeAndShapeInfo *tensor_info_const;
+            st = g_ort->CastTypeInfoToTensorInfo(type_info, &tensor_info_const);
             if (st) { g_ort->ReleaseStatus(st); g_ort->ReleaseTypeInfo(type_info); return false; }
 
             size_t dim_count = 0;
-            g_ort->GetDimensionsCount(tensor_info, &dim_count);
+            g_ort->GetDimensionsCount(tensor_info_const, &dim_count);
             std::vector<int64_t> dims(dim_count);
-            g_ort->GetDimensions(tensor_info, dims.data(), dim_count);
+            g_ort->GetDimensions(tensor_info_const, dims.data(), dim_count);
 
             for (auto &d : dims) if (d < 0) d = 1;
 
             output_shapes.push_back(dims);
-            g_ort->ReleaseTensorTypeAndShapeInfo(tensor_info);
             g_ort->ReleaseTypeInfo(type_info);
         }
 
@@ -921,9 +923,10 @@ public:
                 input.width, input.height);
         }
 
-        // Clamp final mask
+        // Clamp final mask to [0,1]
         for (auto &v : mask.alpha) {
-            v = std::max(0.0f, std::min(1.0f, v));
+            if (v < 0.0f) v = 0.0f;
+            else if (v > 1.0f) v = 1.0f;
         }
 
         // Cleanup
