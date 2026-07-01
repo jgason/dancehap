@@ -274,6 +274,8 @@ void ai_matte_get_defaults(obs_data_t *settings)
 {
     if (!settings) return;
     obs_data_set_default_bool(settings, "matte_enable", false);
+    obs_data_set_default_int(settings, "matte_model", 0);        // 0 = RVM
+    obs_data_set_default_bool(settings, "matte_advanced", false);
     obs_data_set_default_string(settings, "matte_model_path", "");
     obs_data_set_default_int(settings, "matte_provider", 0);  // Auto
     obs_data_set_default_int(settings, "matte_quality", 1);   // Balanced
@@ -286,9 +288,41 @@ obs_properties_t *ai_matte_get_properties(void * /*data*/)
     obs_properties_add_bool(props, "matte_enable",
         obs_module_text("DanceHAP.Matte.Enable"));
 
-    obs_properties_add_path(props, "matte_model_path",
+    // Model dropdown (7 presets from Phase 2.6 multi-model)
+    obs_property_t *p_model = obs_properties_add_list(props,
+        "matte_model",
+        obs_module_text("DanceHAP.Matte.Model"),
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    const auto &specs = dancehap::getAllModelSpecs();
+    for (size_t i = 0; i < specs.size(); ++i) {
+        obs_property_list_add_int(p_model,
+            specs[i].display_name.c_str(),
+            static_cast<int>(i));
+    }
+
+    // Advanced toggle: show custom model file picker
+    obs_property_t *p_advanced = obs_properties_add_bool(props,
+        "matte_advanced",
+        obs_module_text("DanceHAP.Matte.Advanced"));
+    obs_property_set_modified_callback(p_advanced,
+        [](obs_properties_t *props_, obs_property_t * /*p*/, obs_data_t *settings)
+        {
+            bool advanced = obs_data_get_bool(settings, "matte_advanced");
+            obs_property_set_visible(
+                obs_properties_get(props_, "matte_model_path"),
+                advanced);
+            obs_property_set_visible(
+                obs_properties_get(props_, "matte_model"),
+                !advanced);
+            return true;
+        });
+
+    // Custom model file picker (visible only when advanced=true)
+    obs_property_t *p_path = obs_properties_add_path(props,
+        "matte_model_path",
         obs_module_text("DanceHAP.Matte.ModelPath"),
-        OBS_PATH_FILE, "ONNX model (*.onnx)", nullptr);
+        OBS_PATH_FILE, "ONNX/ORT model (*.onnx *.ort)", nullptr);
+    obs_property_set_visible(p_path, false);  // hidden by default
 
     obs_property_t *prop_prov = obs_properties_add_list(props,
         "matte_provider",
@@ -323,12 +357,50 @@ void ai_matte_update(void *data, obs_data_t *settings)
     if (!ctx) return;
 
     bool enable = obs_data_get_bool(settings, "matte_enable");
-    const char *model = obs_data_get_string(settings, "matte_model_path");
+    int model_idx = static_cast<int>(obs_data_get_int(settings, "matte_model"));
+    bool advanced = obs_data_get_bool(settings, "matte_advanced");
+    const char *custom_path = obs_data_get_string(settings, "matte_model_path");
     int provider = static_cast<int>(obs_data_get_int(settings, "matte_provider"));
     int quality  = static_cast<int>(obs_data_get_int(settings, "matte_quality"));
 
     ctx->matte_enabled = enable;
-    ctx->model_path = model ? model : "";
+
+    // Resolve the model path and type.
+    std::string resolved_path;
+    dancehap::MatteModelType resolved_type = dancehap::MatteModelType::RVM;
+
+    if (advanced && custom_path && custom_path[0] != '\0') {
+        // Advanced mode: custom model file, type auto-detected from filename
+        resolved_path = custom_path;
+        resolved_type = dancehap::resolveModelType(resolved_path);
+    } else {
+        // Preset mode: resolve dropdown index → spec → bundled model filename
+        const auto &specs = dancehap::getAllModelSpecs();
+        if (model_idx >= 0 && model_idx < static_cast<int>(specs.size())) {
+            resolved_type = specs[static_cast<size_t>(model_idx)].type;
+            // Build path to bundled model in the plugin's data/models/ directory.
+            // obs_module_file returns the plugin data directory.
+#ifdef DANCEHAP_HAVE_OBS
+            char *data_dir = obs_module_file("");
+            if (data_dir) {
+                std::string base(data_dir);
+                bfree(data_dir);
+                // Strip trailing slash if present, then append models/<filename>
+                if (!base.empty() && base.back() == '/') base.pop_back();
+                resolved_path = base + "/models/" +
+                    specs[static_cast<size_t>(model_idx)].default_filename;
+            } else {
+                resolved_path = "models/" +
+                    specs[static_cast<size_t>(model_idx)].default_filename;
+            }
+#else
+            resolved_path = "models/" +
+                specs[static_cast<size_t>(model_idx)].default_filename;
+#endif
+        }
+    }
+
+    ctx->model_path = resolved_path;
 
     int res = (quality == 0) ? 192 : (quality == 2) ? 512 : 256;
 
@@ -377,6 +449,7 @@ void ai_matte_update(void *data, obs_data_t *settings)
     if (ctx->engine_created && ctx->engine) {
         ctx->engine->setConfig(cfg);
         ctx->engine->setDesiredProvider(ep);
+        ctx->engine->setModelType(resolved_type);
     }
 
     if (enable && !ctx->model_path.empty()) {
@@ -390,11 +463,14 @@ void ai_matte_update(void *data, obs_data_t *settings)
             blog(LOG_INFO, "[DanceHAP] MatteEngine: engine create requested (async)");
         }
 
+        // Reload if the path changed, or if the type changed (engine needs
+        // a new backend for the resolved model type).
         bool need_load = !ctx->engine_created
             || ctx->model_path != ctx->loaded_model_path;
         if (ctx->engine_created && ctx->engine
             && ctx->engine->isReady()
-            && ctx->model_path == ctx->loaded_model_path) {
+            && ctx->model_path == ctx->loaded_model_path
+            && ctx->engine->modelType() == resolved_type) {
             need_load = false;
         }
         if (need_load) {
@@ -404,7 +480,8 @@ void ai_matte_update(void *data, obs_data_t *settings)
                 ctx->model_load_requested = true;
             }
             ctx->cv.notify_one();
-            blog(LOG_INFO, "[DanceHAP] MatteEngine: model load requested (async)");
+            blog(LOG_INFO, "[DanceHAP] MatteEngine: model load requested (async, type=%d)",
+                 static_cast<int>(resolved_type));
         }
     }
 #endif
