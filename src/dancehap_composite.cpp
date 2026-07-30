@@ -28,12 +28,18 @@
 #include "clip_player.hpp"
 #include "show_file.hpp"
 #include "bspline.hpp"
+#include "webcam_capturer.hpp"
+#include "matte_engine.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -107,6 +113,196 @@ struct DLayerRuntime {
     }
 };
 
+/// DLayer 2 runtime — LIVE webcam capture + matting (ADR-011, ADR-010).
+/// Matting is STATIC (one config for the whole show). The webcam is captured
+/// via WebcamCapturer (private OBS source). The MatteEngine runs async on
+/// a worker thread (same pattern as ai_matte_filter Phase 2.5b).
+struct DLayer2Runtime {
+    // Webcam capture
+    std::unique_ptr<WebcamCapturer> webcam;
+    std::string webcam_device;
+    int webcam_width  = 1280;
+    int webcam_height = 720;
+    int webcam_fps    = 30;
+    bool webcam_opened = false;
+
+    // Matting config (static for the whole show — ADR-010)
+    MattingConfig matting_config;
+    std::string matting_model_path;
+    bool matting_enabled = false;
+
+    // Latest webcam frame (CPU, from video_tick)
+    WebcamFrame latest_frame;
+    bool has_new_frame = false;
+
+    // Matted frame (BGRA with alpha applied — person opaque, bg transparent)
+    std::vector<uint8_t> matted_bgra;
+    uint32_t matted_width  = 0;
+    uint32_t matted_height = 0;
+    bool matted_ready = false;
+    std::mutex matted_lock;
+
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    // MatteEngine (lazy-init on worker thread — leçon bug 9d du brief)
+    std::unique_ptr<MatteEngine> engine;
+    bool engine_created = false;
+
+    // Async worker for matting inference
+    std::thread worker;
+    std::mutex worker_mtx;
+    std::condition_variable cv;
+    std::atomic<bool> stop_worker{false};
+    std::atomic<bool> inference_requested{false};
+
+    // Input for the worker (copy of latest_frame)
+    std::vector<uint8_t> worker_input_bgra;
+    int worker_input_w = 0;
+    int worker_input_h = 0;
+
+    // Output from the worker
+    std::vector<float> worker_output_mask;
+    int worker_mask_w = 0;
+    int worker_mask_h = 0;
+    std::mutex output_lock;
+
+    void start_worker()
+    {
+        if (worker.joinable()) return;
+        stop_worker.store(false);
+        worker = std::thread([this] { worker_loop(); });
+    }
+
+    void stop_worker_thread()
+    {
+        stop_worker.store(true);
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+
+    void worker_loop()
+    {
+        while (!stop_worker.load()) {
+            std::unique_lock<std::mutex> lock(worker_mtx);
+            cv.wait(lock, [this] {
+                return stop_worker.load() || inference_requested.load();
+            });
+            if (stop_worker.load()) break;
+
+            if (inference_requested.load()) {
+                inference_requested.store(false);
+                lock.unlock();
+
+                // Lazy-init engine on worker thread (leçon bug 9d)
+                if (!engine_created) {
+                    engine = std::make_unique<MatteEngine>();
+                    engine_created = true;
+                }
+
+                // Load model if needed
+                if (matting_enabled && !matting_model_path.empty()) {
+                    if (!engine->isReady()) {
+                        engine->loadModel(matting_model_path);
+                    }
+                }
+
+                if (engine && engine->isReady() &&
+                    worker_input_w > 0 && worker_input_h > 0) {
+                    ImageFrame input;
+                    input.width  = worker_input_w;
+                    input.height = worker_input_h;
+                    input.data_rgba = worker_input_bgra.data();
+
+                    MatteMask mask = engine->infer(input);
+
+                    std::lock_guard<std::mutex> ol(output_lock);
+                    worker_output_mask = std::move(mask.alpha);
+                    worker_mask_w = mask.width;
+                    worker_mask_h = mask.height;
+                }
+            }
+        }
+    }
+
+    /// Request an async matting pass on the latest webcam frame.
+    void request_matting()
+    {
+        if (!matting_enabled) return;
+        {
+            std::lock_guard<std::mutex> lock(worker_mtx);
+            worker_input_bgra = latest_frame.bgra;
+            worker_input_w   = (int)latest_frame.width;
+            worker_input_h   = (int)latest_frame.height;
+        }
+        inference_requested.store(true);
+        cv.notify_one();
+    }
+
+    /// Apply the latest available mask to the webcam frame (called from
+    /// video_tick, CPU thread). Produces matted_bgra with alpha channel
+    /// modulated by the mask (1.0 = person opaque, 0.0 = bg transparent).
+    void apply_matted_frame()
+    {
+        if (!matting_enabled) {
+            // No matting — just copy the frame as-is (opaque)
+            std::lock_guard<std::mutex> ml(matted_lock);
+            matted_bgra = latest_frame.bgra;
+            matted_width  = latest_frame.width;
+            matted_height = latest_frame.height;
+            matted_ready = !matted_bgra.empty();
+            return;
+        }
+
+        std::vector<float> mask;
+        int mask_w, mask_h;
+        {
+            std::lock_guard<std::mutex> ol(output_lock);
+            mask = worker_output_mask;
+            mask_w = worker_mask_w;
+            mask_h = worker_mask_h;
+        }
+
+        if (mask.empty() || mask_w <= 0 || mask_h <= 0) {
+            // No mask yet — use opaque
+            std::lock_guard<std::mutex> ml(matted_lock);
+            matted_bgra = latest_frame.bgra;
+            matted_width  = latest_frame.width;
+            matted_height = latest_frame.height;
+            matted_ready = !matted_bgra.empty();
+            return;
+        }
+
+        // Apply mask: modulate alpha channel by mask value.
+        // mask is [0,1] where 1=person, 0=background.
+        // We resize the mask to the frame dimensions by nearest-neighbor.
+        uint32_t fw = latest_frame.width;
+        uint32_t fh = latest_frame.height;
+        std::vector<uint8_t> result(static_cast<size_t>(fw) * fh * 4);
+        for (uint32_t y = 0; y < fh; ++y) {
+            int my = (int)((float)y / fh * mask_h);
+            if (my >= mask_h) my = mask_h - 1;
+            for (uint32_t x = 0; x < fw; ++x) {
+                int mx = (int)((float)x / fw * mask_w);
+                if (mx >= mask_w) mx = mask_w - 1;
+                float a = mask[my * mask_w + mx];
+                a = std::clamp(a, 0.0f, 1.0f);
+                size_t src_idx = (size_t(y) * fw + x) * 4;
+                size_t dst_idx = src_idx;
+                result[dst_idx]     = latest_frame.bgra[src_idx];     // B
+                result[dst_idx + 1] = latest_frame.bgra[src_idx + 1]; // G
+                result[dst_idx + 2] = latest_frame.bgra[src_idx + 2]; // R
+                result[dst_idx + 3] = (uint8_t)(a * 255.0f);           // A
+            }
+        }
+
+        std::lock_guard<std::mutex> ml(matted_lock);
+        matted_bgra = std::move(result);
+        matted_width  = fw;
+        matted_height = fh;
+        matted_ready = true;
+    }
+#endif // DANCEHAP_HAVE_ONNXRUNTIME
+};
+
 } // namespace dancehap
 
 // ---------------------------------------------------------------------------
@@ -133,7 +329,8 @@ struct CompositeContext {
     // DLayers
     dancehap::DLayerRuntime dlayer1;  // background
     dancehap::DLayerRuntime dlayer3;  // overlay
-    // DLayer 2 (webcam) — placeholder for Étape 5, opacity only
+    // DLayer 2 (webcam + matting) — Phase 3 Étape 5
+    dancehap::DLayer2Runtime dlayer2;
     double dlayer2_opacity = 0.0;
     std::optional<dancehap::BSpline> dlayer2_bspline;
 
@@ -230,9 +427,10 @@ struct CompositeContext {
         // Build DLayer runtimes from the show file
         build_dlayer(dlayer1, show->dlayer1);
         build_dlayer(dlayer3, show->dlayer3);
-        // DLayer 2 opacity only (webcam placeholder)
+        // DLayer 2: webcam + matting (Phase 3 Étape 5)
         build_bspline(dlayer2_bspline, show->dlayer2.opacity_keyframes);
-        dlayer2_opacity = 0.0; // webcam disabled until Étape 5
+        dlayer2_opacity = 0.0;
+        build_dlayer2();
 
         // Determine output dimensions from DLayer 1 first clip
         if (!show->dlayer1.clips.empty()) {
@@ -303,10 +501,39 @@ struct CompositeContext {
         // Tick DLayer 1 (background)
         tick_dlayer(dlayer1, dt_seconds);
 
-        // DLayer 2 (webcam) — placeholder, no tick needed yet
+        // DLayer 2 (webcam + matting) — Phase 3 Étape 5
+        tick_dlayer2();
 
         // Tick DLayer 3 (overlay)
         tick_dlayer(dlayer3, dt_seconds);
+    }
+
+    /// Tick DLayer 2: capture webcam frame + request async matting + apply mask.
+    /// CPU-only (no gs_*). Called from video_tick.
+    void tick_dlayer2()
+    {
+        if (!dlayer2.webcam_opened) return;
+
+        // Get the latest frame from the webcam (respects linesize internally)
+        dancehap::WebcamFrame frame = dlayer2.webcam->getFrame();
+        if (frame.valid()) {
+            dlayer2.latest_frame = std::move(frame);
+            dlayer2.has_new_frame = true;
+
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+            // Request async matting on the new frame
+            dlayer2.request_matting();
+            // Apply the latest available mask (may be from a previous frame)
+            dlayer2.apply_matted_frame();
+#else
+            // No ONNX Runtime — just use the raw webcam frame as matted (opaque)
+            std::lock_guard<std::mutex> ml(dlayer2.matted_lock);
+            dlayer2.matted_bgra = dlayer2.latest_frame.bgra;
+            dlayer2.matted_width  = dlayer2.latest_frame.width;
+            dlayer2.matted_height = dlayer2.latest_frame.height;
+            dlayer2.matted_ready = !dlayer2.matted_bgra.empty();
+#endif
+        }
     }
 
     void tick_dlayer(dancehap::DLayerRuntime &dl, float dt)
@@ -403,11 +630,21 @@ struct CompositeContext {
         param = gs_effect_get_param_by_name(composite_effect, "bg_image2");
         if (param && bg2_tex) gs_effect_set_texture(param, bg2_tex);
 
-        // DLayer 2 (webcam) — placeholder: no texture yet (black/transparent)
+        // DLayer 2 (webcam + matting) — upload matted frame to GPU texture
+        // Must be on render thread (gs_* only from video_render).
+        gs_texture_t *webcam_tex = nullptr;
+        {
+            std::lock_guard<std::mutex> ml(dlayer2.matted_lock);
+            if (dlayer2.matted_ready && dlayer2.matted_width > 0 &&
+                !dlayer2.matted_bgra.empty()) {
+                const uint8_t *data_ptr = dlayer2.matted_bgra.data();
+                webcam_tex = gs_texture_create(
+                    dlayer2.matted_width, dlayer2.matted_height,
+                    GS_BGRA, 1, &data_ptr, 0);
+            }
+        }
         param = gs_effect_get_param_by_name(composite_effect, "webcam_image");
-        // In stub mode or before Étape 5, we don't set webcam_image — the
-        // shader samples a default (black) texture. In real OBS we should
-        // create a 1x1 black texture as placeholder.
+        if (param && webcam_tex) gs_effect_set_texture(param, webcam_tex);
 
         param = gs_effect_get_param_by_name(composite_effect, "overlay_image");
         if (param && overlay_tex) gs_effect_set_texture(param, overlay_tex);
@@ -495,6 +732,36 @@ private:
         build_bspline(dl.bspline, cfg.opacity_keyframes);
     }
 
+    /// Build DLayer 2: initialize webcam capturer + matting from show config.
+    /// Matting is static (ADR-010). Webcam device from show file (ADR-011).
+    void build_dlayer2()
+    {
+        if (!show) return;
+
+        // Webcam config
+        dlayer2.webcam_device = show->webcam.device;
+        dlayer2.webcam_width  = show->webcam.width;
+        dlayer2.webcam_height = show->webcam.height;
+        dlayer2.webcam_fps    = show->webcam.fps;
+
+        // Matting config (static for whole show)
+        dlayer2.matting_config = show->matting;
+        dlayer2.matting_enabled = true;
+
+        // Resolve model path from matting_config.model
+#ifdef DANCEHAP_HAVE_OBS
+        const char *base = obs_module_file("models");
+        if (base) {
+            std::string path(base);
+            bfree((void*)base);
+            dlayer2.matting_model_path = path + "/" + dlayer2.matting_config.model + ".onnx";
+        }
+#else
+        // Stub mode: no real model path
+        dlayer2.matting_model_path = "";
+#endif
+    }
+
     void build_bspline(std::optional<dancehap::BSpline> &bs,
                        const std::vector<dancehap::Keyframe> &kfs)
     {
@@ -551,6 +818,18 @@ void composite_destroy(void *data)
 {
     auto *ctx = static_cast<CompositeContext *>(data);
     if (!ctx) return;
+
+    // Stop matting worker thread (leçon bug 9d — must stop before destroying engine)
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    ctx->dlayer2.stop_worker_thread();
+#endif
+
+    // Close webcam capturer
+#ifdef DANCEHAP_HAVE_OBS
+    if (ctx->dlayer2.webcam) {
+        ctx->dlayer2.webcam->close();
+    }
+#endif
 
     // Release graphics resources
 #ifdef DANCEHAP_HAVE_OBS
