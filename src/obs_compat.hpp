@@ -69,11 +69,12 @@ struct obs_properties {
     struct property {
         std::string name;
         std::string description;
-        std::string kind;   // "path", "bool", "int"
+        std::string kind;   // "path", "bool", "int", "list"
         std::string filter; // file filter (path properties only)
         int min_val = 0;    // min value (int properties only)
         int max_val = 0;    // max value (int properties only)
         int step_val = 1;   // step value (int properties only)
+        bool visible = true; // Phase 2.6: visibility toggle
     };
     std::vector<property> props;
 };
@@ -189,19 +190,19 @@ long long         obs_data_get_int(obs_data_t *settings, const char *name);
 // obs_properties
 obs_properties_t *obs_properties_create(void);
 void              obs_properties_destroy(obs_properties_t *props);
-obs_properties_t *obs_properties_add_path(obs_properties_t *props,
-                                          const char *name,
-                                          const char *description,
-                                          enum obs_path_type type,
-                                          const char *filter,
-                                          const char *default_path);
-obs_properties_t *obs_properties_add_bool(obs_properties_t *props,
-                                          const char *name,
-                                          const char *description);
-obs_properties_t *obs_properties_add_int(obs_properties_t *props,
+obs_property_t *obs_properties_add_path(obs_properties_t *props,
                                          const char *name,
                                          const char *description,
-                                         int min_val, int max_val, int step_val);
+                                         enum obs_path_type type,
+                                         const char *filter,
+                                         const char *default_path);
+obs_property_t *obs_properties_add_bool(obs_properties_t *props,
+                                        const char *name,
+                                        const char *description);
+obs_property_t *obs_properties_add_int(obs_properties_t *props,
+                                       const char *name,
+                                       const char *description,
+                                       int min_val, int max_val, int step_val);
 obs_property_t *obs_properties_add_list(obs_properties_t *props,
                                         const char *name,
                                         const char *description,
@@ -209,6 +210,18 @@ obs_property_t *obs_properties_add_list(obs_properties_t *props,
                                         enum obs_combo_format format);
 void obs_property_list_add_int(obs_property_t *prop,
                                const char *name, long long val);
+
+// Property visibility and modified-callback (Phase 2.6 multi-model UI)
+obs_property_t *obs_properties_get(obs_properties_t *props, const char *name);
+void obs_property_set_visible(obs_property_t *prop, bool visible);
+
+// Modified callback type — follows OBS API signature.
+// Returns true if the properties need a refresh.
+typedef bool (*obs_property_modified_cb)(obs_properties_t *props,
+                                         obs_property_t *prop,
+                                         obs_data_t *settings);
+void obs_property_set_modified_callback(obs_property_t *prop,
+                                        obs_property_modified_cb callback);
 
 // i18n (stub: returns key as-is)
 const char *obs_module_text(const char *key);

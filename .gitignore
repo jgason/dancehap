@@ -45,6 +45,9 @@ ui_*.h
 # Models (downloaded, not committed)
 /models/*.onnx
 /models/*.bin
+/data/models/*.ort
+/data/models/*.onnx
+/data/models/*.bin
 
 # Generated test assets (see tests/assets/README.md for the exception policy)
 tests/assets/*.mp4

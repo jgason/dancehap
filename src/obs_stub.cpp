@@ -106,42 +106,42 @@ void obs_properties_destroy(obs_properties_t *props)
     delete props;
 }
 
-obs_properties_t *obs_properties_add_path(obs_properties_t *props,
+obs_property_t *obs_properties_add_path(obs_properties_t *props,
                                            const char *name,
                                            const char *description,
                                            enum obs_path_type /*type*/,
                                            const char *filter,
                                            const char * /*default_path*/)
 {
-    if (!props || !name) return props;
+    if (!props || !name) return nullptr;
     obs_properties::property p;
     p.name = name;
     p.description = description ? description : "";
     p.kind = "path";
     p.filter = filter ? filter : "";
     props->props.push_back(std::move(p));
-    return props;
+    return reinterpret_cast<obs_property_t *>(&props->props.back());
 }
 
-obs_properties_t *obs_properties_add_bool(obs_properties_t *props,
+obs_property_t *obs_properties_add_bool(obs_properties_t *props,
                                            const char *name,
                                            const char *description)
 {
-    if (!props || !name) return props;
+    if (!props || !name) return nullptr;
     obs_properties::property p;
     p.name = name;
     p.description = description ? description : "";
     p.kind = "bool";
     props->props.push_back(std::move(p));
-    return props;
+    return reinterpret_cast<obs_property_t *>(&props->props.back());
 }
 
-obs_properties_t *obs_properties_add_int(obs_properties_t *props,
+obs_property_t *obs_properties_add_int(obs_properties_t *props,
                                           const char *name,
                                           const char *description,
                                           int min_val, int max_val, int step_val)
 {
-    if (!props || !name) return props;
+    if (!props || !name) return nullptr;
     obs_properties::property p;
     p.name = name;
     p.description = description ? description : "";
@@ -150,7 +150,7 @@ obs_properties_t *obs_properties_add_int(obs_properties_t *props,
     p.max_val = max_val;
     p.step_val = step_val;
     props->props.push_back(std::move(p));
-    return props;
+    return reinterpret_cast<obs_property_t *>(&props->props.back());
 }
 
 // obs_properties_add_list — stub returns props (property tracking is minimal).
@@ -175,6 +175,33 @@ void obs_property_list_add_int(obs_property_t * /*prop*/,
                                 const char * /*name*/, long long /*val*/)
 {
     // Stub: no-op. Real OBS appends an entry; we don't track in stub.
+}
+
+// obs_properties_get — find a property by name. Returns nullptr if not found.
+obs_property_t *obs_properties_get(obs_properties_t *props, const char *name)
+{
+    if (!props || !name) return nullptr;
+    for (auto &p : props->props) {
+        if (p.name == name) {
+            return reinterpret_cast<obs_property_t *>(&p);
+        }
+    }
+    return nullptr;
+}
+
+// obs_property_set_visible — toggle property visibility (stub tracks in struct).
+void obs_property_set_visible(obs_property_t *prop, bool visible)
+{
+    if (!prop) return;
+    auto *p = reinterpret_cast<obs_properties::property *>(prop);
+    p->visible = visible;
+}
+
+// obs_property_set_modified_callback — stub no-op (callback not invoked in stub).
+void obs_property_set_modified_callback(obs_property_t * /*prop*/,
+                                        obs_property_modified_cb /*callback*/)
+{
+    // Stub: no-op. Real OBS stores the callback for later invocation.
 }
 
 // obs_module_text — stub returns the key as-is (no i18n in stub mode).

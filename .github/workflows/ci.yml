@@ -52,7 +52,7 @@ jobs:
       # Checkout
       # ==================================================================
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ==================================================================
       # Phase 1: Setup OBS libobs SDK
@@ -224,12 +224,17 @@ jobs:
           } else {
             Write-Host "WARN: onnxruntime.dll not found at $ortDll — plugin may fail to load"
           }
+          # Bundle the matte effect shader (data/obs-plugins/dancehap/effects/)
+          New-Item -ItemType Directory -Force -Path build\artifact\effects | Out-Null
+          Copy-Item data\effects\mask_alpha_filter.effect -Destination build\artifact\effects\mask_alpha_filter.effect
+          Write-Host "matte effect shader bundled"
 
       - name: Locate built plugin (macOS)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p build/artifact
+          mkdir -p build/artifact/effects
           cp "$(find build -name 'dancehap.so' -type f | head -1)" build/artifact/dancehap.so
+          cp data/effects/mask_alpha_filter.effect build/artifact/effects/
 
       - name: Smoke test (symbol export check)
         shell: bash
@@ -246,9 +251,11 @@ jobs:
       # ==================================================================
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dancehap-plugin-${{ matrix.os }}
-          path: build/artifact/dancehap.${{ matrix.artifact_ext }}
+          path: |
+            build/artifact/dancehap.${{ matrix.artifact_ext }}
+            build/artifact/effects/
           if-no-files-found: error
           retention-days: 14
