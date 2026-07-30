@@ -732,6 +732,36 @@ private:
         build_bspline(dl.bspline, cfg.opacity_keyframes);
     }
 
+    /// Build DLayer 2: initialize webcam capturer + matting from show config.
+    /// Matting is static (ADR-010). Webcam device from show file (ADR-011).
+    void build_dlayer2()
+    {
+        if (!show) return;
+
+        // Webcam config
+        dlayer2.webcam_device = show->webcam.device;
+        dlayer2.webcam_width  = show->webcam.width;
+        dlayer2.webcam_height = show->webcam.height;
+        dlayer2.webcam_fps    = show->webcam.fps;
+
+        // Matting config (static for whole show)
+        dlayer2.matting_config = show->matting;
+        dlayer2.matting_enabled = true;
+
+        // Resolve model path from matting_config.model
+#ifdef DANCEHAP_HAVE_OBS
+        const char *base = obs_module_file("models");
+        if (base) {
+            std::string path(base);
+            bfree((void*)base);
+            dlayer2.matting_model_path = path + "/" + dlayer2.matting_config.model + ".onnx";
+        }
+#else
+        // Stub mode: no real model path
+        dlayer2.matting_model_path = "";
+#endif
+    }
+
     void build_bspline(std::optional<dancehap::BSpline> &bs,
                        const std::vector<dancehap::Keyframe> &kfs)
     {
@@ -788,6 +818,18 @@ void composite_destroy(void *data)
 {
     auto *ctx = static_cast<CompositeContext *>(data);
     if (!ctx) return;
+
+    // Stop matting worker thread (leçon bug 9d — must stop before destroying engine)
+#ifdef DANCEHAP_HAVE_ONNXRUNTIME
+    ctx->dlayer2.stop_worker_thread();
+#endif
+
+    // Close webcam capturer
+#ifdef DANCEHAP_HAVE_OBS
+    if (ctx->dlayer2.webcam) {
+        ctx->dlayer2.webcam->close();
+    }
+#endif
 
     // Release graphics resources
 #ifdef DANCEHAP_HAVE_OBS
