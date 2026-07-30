@@ -20,6 +20,7 @@
 #include "dancehap/version.h"
 #include "hap_clip_source.hpp"
 #include "ai_matte_filter.hpp"
+#include "dancehap_composite.hpp"
 
 // ---------------------------------------------------------------------------
 // Module lifecycle
@@ -34,6 +35,7 @@ bool obs_module_load(void)
 #endif
     register_hap_clip_source();
     register_ai_matte_filter();
+    register_dancehap_composite_source();
     return true;
 }
 

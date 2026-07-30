@@ -21,6 +21,16 @@ namespace {
 int g_registration_count = 0;
 const obs_source_info *g_last_source = nullptr;
 
+// Phase 3 stub state (declared here so obs_stub_reset can zero them).
+// These are defined and used in the Phase 3 stub sections below.
+int g_graphics_refcount = 0;
+int g_private_sources_created = 0;
+int g_sources_released = 0;
+int g_hotkey_count = 0;
+uint64_t g_next_hotkey_id = 1;
+int g_docks_added = 0;
+std::string g_module_data_path = "data/";
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -70,6 +80,12 @@ const char *obs_data_get_string(obs_data_t *settings, const char *name)
     auto dit = settings->default_strings.find(name);
     if (dit != settings->default_strings.end()) return dit->second.c_str();
     return "";
+}
+
+void obs_data_set_string(obs_data_t *settings, const char *name, const char *val)
+{
+    if (!settings || !name) return;
+    settings->strings[name] = val ? val : "";
 }
 
 bool obs_data_get_bool(obs_data_t *settings, const char *name)
@@ -229,6 +245,14 @@ void obs_stub_reset(void)
 {
     g_registration_count = 0;
     g_last_source = nullptr;
+    // Phase 3 reset
+    g_graphics_refcount = 0;
+    g_private_sources_created = 0;
+    g_sources_released = 0;
+    g_hotkey_count = 0;
+    g_next_hotkey_id = 1;
+    g_docks_added = 0;
+    g_module_data_path = "data/";
 }
 
 int obs_stub_registration_count(void)
@@ -240,5 +264,229 @@ const struct obs_source_info *obs_stub_last_registered_source(void)
 {
     return g_last_source;
 }
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Graphics API stubs
+// ---------------------------------------------------------------------------+
+// These are no-op/lightweight stubs that allow the composite source code to
+// compile and run in stub mode. In real OBS, these are provided by libobs
+// graphics subsystem.
+
+// (g_graphics_refcount is declared in the anonymous namespace above.)
+
+void obs_enter_graphics(void)
+{
+    ++g_graphics_refcount;
+}
+
+void obs_leave_graphics(void)
+{
+    if (g_graphics_refcount > 0)
+        --g_graphics_refcount;
+}
+
+// Stub effect: just a non-null sentinel pointer. In stub mode we never
+// actually load a shader file — gs_effect_create_from_file returns a
+// fake handle. Tests that check "effect loaded" verify non-null.
+static gs_effect_t *g_fake_effect = nullptr;
+
+gs_effect_t *gs_effect_create_from_file(const char *file, const char * /*cache*/)
+{
+    // Return a stable non-null pointer (same pointer each call so tests
+    // can compare). We don't actually parse the .effect file in stub mode.
+    if (!g_fake_effect)
+        g_fake_effect = reinterpret_cast<gs_effect_t *>(0xDEAD);
+    (void)file; // unused in stub
+    return g_fake_effect;
+}
+
+void gs_effect_destroy(gs_effect_t *effect)
+{
+    if (effect == g_fake_effect) {
+        g_fake_effect = nullptr;
+    }
+}
+
+gs_eparam_t *gs_effect_get_param_by_name(gs_effect_t *effect, const char *name)
+{
+    if (!effect || !name) return nullptr;
+    // Return a fake non-null pointer. In real OBS this is a handle to the
+    // uniform parameter. In stub mode we don't need to track values.
+    return reinterpret_cast<gs_eparam_t *>(0xBEEF);
+}
+
+void gs_effect_set_float(gs_eparam_t * /*param*/, float /*val*/)
+{
+    // Stub: no-op. Real OBS sets the uniform value.
+}
+
+void gs_effect_set_texture(gs_eparam_t * /*param*/, gs_texture_t * /*tex*/)
+{
+    // Stub: no-op.
+}
+
+gs_technique_t *gs_effect_get_technique(gs_effect_t *effect, const char * /*name*/)
+{
+    if (!effect) return nullptr;
+    // Return a fake non-null technique pointer.
+    return reinterpret_cast<gs_technique_t *>(0xCAFE);
+}
+
+size_t gs_technique_begin(gs_technique_t * /*tech*/)
+{
+    return 1; // one pass
+}
+
+void gs_technique_begin_pass(gs_technique_t * /*tech*/, size_t /*pass*/)
+{
+    // Stub: no-op.
+}
+
+void gs_technique_end_pass(gs_technique_t * /*tech*/)
+{
+    // Stub: no-op.
+}
+
+void gs_technique_end(gs_technique_t * /*tech*/)
+{
+    // Stub: no-op.
+}
+
+void gs_draw_sprite(gs_texture_t * /*tex*/, uint32_t /*flags*/,
+                    uint32_t /*width*/, uint32_t /*height*/)
+{
+    // Stub: no-op. Real OBS draws a textured quad.
+}
+
+void gs_blend_state_push(void)
+{
+    // Stub: no-op.
+}
+
+void gs_blend_state_pop(void)
+{
+    // Stub: no-op.
+}
+
+void gs_blend_function(int /*src*/, int /*dst*/)
+{
+    // Stub: no-op (g_blend_src/dst removed — not needed in stub mode).
+}
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Module file path stub
+// ---------------------------------------------------------------------------+
+
+// (g_module_data_path is declared in the anonymous namespace above.)
+
+const char *obs_module_file(const char *file)
+{
+    if (!file) return "";
+    static thread_local std::string result;
+    result = g_module_data_path + file;
+    return result.c_str();
+}
+
+// Test helper: set the module data path (for tests that want a specific dir).
+void obs_stub_set_module_data_path(const char *path)
+{
+    g_module_data_path = path ? path : "data/";
+}
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Source lifecycle stubs (private sources, frames, hotkeys)
+// ---------------------------------------------------------------------------+
+
+// (g_private_sources_created, g_sources_released are in the anon namespace.)
+
+obs_source_t *obs_source_create_private(const char *id, const char * /*name*/,
+                                        obs_data_t * /*settings*/)
+{
+    // In stub mode, we return a fake source pointer. Tests can check that
+    // create_private was called. We return nullptr to indicate "no webcam
+    // available in stub mode" — the composite source handles this gracefully.
+    (void)id;
+    ++g_private_sources_created;
+    return nullptr; // stub: no real webcam
+}
+
+void obs_source_release(obs_source_t *source)
+{
+    if (source) {
+        ++g_sources_released;
+    }
+}
+
+void obs_source_addref(obs_source_t * /*source*/)
+{
+    // Stub: no-op.
+}
+
+obs_source_frame_t *obs_source_get_frame(obs_source_t *source)
+{
+    if (!source) return nullptr;
+    // Stub: no frames available from a fake source.
+    return nullptr;
+}
+
+void obs_source_release_frame(obs_source_t * /*source*/,
+                              obs_source_frame_t *frame)
+{
+    // Stub: no-op. Real OBS decrements ref count.
+    (void)frame;
+}
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Hotkey stubs
+// ---------------------------------------------------------------------------+
+
+// (g_hotkey_count, g_next_hotkey_id are in the anon namespace.)
+
+obs_hotkey_id obs_hotkey_register_source(obs_source_t * /*source*/,
+                                          const char * /*name*/,
+                                          const char * /*description*/,
+                                          obs_hotkey_func /*func*/,
+                                          void * /*client_data*/)
+{
+    ++g_hotkey_count;
+    return g_next_hotkey_id++;
+}
+
+void obs_hotkey_unregister(obs_hotkey_id /*id*/)
+{
+    // Stub: no-op.
+    if (g_hotkey_count > 0) --g_hotkey_count;
+}
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Frontend dock stubs
+// ---------------------------------------------------------------------------+
+
+// (g_docks_added is in the anon namespace.)
+
+bool obs_frontend_add_dock_by_id(const char * /*id*/, const char * /*title*/,
+                                  void * /*widget*/)
+{
+    ++g_docks_added;
+    return true;
+}
+
+void obs_frontend_remove_dock(const char * /*id*/)
+{
+    // Stub: no-op.
+}
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Test helpers (extended)
+// ---------------------------------------------------------------------------+
+
+int obs_stub_graphics_refcount(void) { return g_graphics_refcount; }
+int obs_stub_private_sources_created(void) { return g_private_sources_created; }
+int obs_stub_hotkey_count(void) { return g_hotkey_count; }
+int obs_stub_docks_added(void) { return g_docks_added; }
+
+// Reset Phase 3 stub state (called by obs_stub_reset above — also reset here
+// so the extended state is zeroed alongside the base state).
+// This is called from within obs_stub_reset() via a mechanism below.
 
 #endif // !DANCEHAP_HAVE_OBS

@@ -1,0 +1,72 @@
+uniform float4x4 ViewProj;
+
+uniform texture2d bg_image;
+uniform texture2d bg_image2;
+uniform texture2d webcam_image;
+uniform texture2d overlay_image;
+
+uniform float crossfade_t;
+uniform float bg_opacity;
+uniform float webcam_opacity;
+uniform float overlay_opacity;
+uniform float crossfade_active;
+
+sampler_state textureSampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertDataIn {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSComposite(VertDataIn v_in)
+{
+	VertDataOut vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float4 PSComposite(VertDataOut v_in) : TARGET
+{
+	float4 bg     = bg_image.Sample(textureSampler, v_in.uv);
+	float4 bg2    = bg_image2.Sample(textureSampler, v_in.uv);
+	float4 webcam = webcam_image.Sample(textureSampler, v_in.uv);
+	float4 overlay = overlay_image.Sample(textureSampler, v_in.uv);
+
+	// Crossfade DLayer 1: lerp between bg and bg2 when crossfade_active > 0.5
+	float4 bg_final = lerp(bg, bg2, crossfade_t * step(0.5, crossfade_active));
+	bg_final.a *= bg_opacity;
+
+	// Compositing back-to-front: bg → webcam → overlay
+	float4 result = bg_final;
+
+	// Webcam layer (DLayer 2): alpha-blend over background
+	float wa = webcam.a * webcam_opacity;
+	result.rgb = lerp(result.rgb, webcam.rgb, wa);
+	result.a = max(result.a, wa);
+
+	// Overlay layer (DLayer 3): alpha-blend over result
+	float oa = overlay.a * overlay_opacity;
+	result.rgb = lerp(result.rgb, overlay.rgb, oa);
+	result.a = max(result.a, oa);
+
+	return result;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSComposite(v_in);
+		pixel_shader  = PSComposite(v_in);
+	}
+}

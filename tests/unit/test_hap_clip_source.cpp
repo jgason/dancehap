@@ -342,12 +342,12 @@ TEST_F(HapClipSourceTest, ModuleLoadRegistersSource)
     // Trigger module load.
     EXPECT_TRUE(obs_module_load());
 
-    // After load: exactly 2 registrations (hap_clip_source + ai_matte_filter).
-    // The last registered source is the ai_matte_filter (registered second).
-    EXPECT_EQ(obs_stub_registration_count(), 2);
+    // After load: exactly 3 registrations (hap_clip_source + ai_matte_filter + dancehap_composite).
+    // The last registered source is the dancehap_composite (registered third).
+    EXPECT_EQ(obs_stub_registration_count(), 3);
     const obs_source_info *registered = obs_stub_last_registered_source();
     ASSERT_NE(registered, nullptr);
-    EXPECT_STREQ(registered->id, AI_MATTE_FILTER_ID);
+    EXPECT_STREQ(registered->id, "dancehap_composite");
 }
 
 TEST_F(HapClipSourceTest, RegisterHapClipSourceCallsObsRegisterSource)

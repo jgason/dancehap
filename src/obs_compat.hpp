@@ -86,9 +86,38 @@ typedef struct obs_properties obs_properties;
 // (obs_source_t, gs_effect_t, gs_texture_t remain opaque.)
 typedef struct obs_data       obs_data_t;
 typedef struct obs_properties obs_properties_t;
-typedef struct obs_source     obs_source_t;
-typedef struct gs_effect      gs_effect_t;
-typedef struct gs_texture     gs_texture_t;
+typedef struct obs_source    obs_source_t;
+typedef struct gs_effect     gs_effect_t;
+typedef struct gs_texture    gs_texture_t;
+
+// Phase 3: additional opaque graphics types needed for composite source.
+struct gs_technique;          // opaque — a technique within an effect
+struct gs_eparam;             // opaque — an effect parameter
+typedef struct gs_technique  gs_technique_t;
+typedef struct gs_eparam     gs_eparam_t;
+
+// Phase 3: obs_source_frame — frame data from async sources (webcam).
+// In real OBS this is a full struct with data[], linesize, width, height,
+// format, timestamp. In stub mode we expose a minimal version for tests.
+struct obs_source_frame {
+    uint8_t *data[8]   = {};  // plane pointers (BGRA in [0])
+    int       linesize[8] = {};  // row stride per plane
+    uint32_t  width      = 0;
+    uint32_t  height     = 0;
+    int       format     = 0;  // enum video_format (stub: raw int)
+    int64_t   timestamp  = 0; // nanoseconds
+    long      refs       = 1;
+};
+typedef struct obs_source_frame obs_source_frame_t;
+
+// Phase 3: hotkey types (minimal stub).
+typedef uint64_t obs_hotkey_id;
+typedef uint64_t obs_hotkey_pair_id;
+struct obs_hotkey;
+typedef struct obs_hotkey obs_hotkey_t;
+
+// Phase 3: hotkey callback type (matches OBS obs-hotkey.h).
+typedef void (*obs_hotkey_func)(void *data, obs_hotkey_t *hotkey, bool pressed);
 
 // ---- Enums ----------------------------------------------------------------
 
@@ -184,6 +213,7 @@ void              obs_data_set_default_bool(obs_data_t *settings,
 void              obs_data_set_default_int(obs_data_t *settings,
                                            const char *name, long long val);
 const char       *obs_data_get_string(obs_data_t *settings, const char *name);
+void              obs_data_set_string(obs_data_t *settings, const char *name, const char *val);
 bool              obs_data_get_bool(obs_data_t *settings, const char *name);
 long long         obs_data_get_int(obs_data_t *settings, const char *name);
 
@@ -230,6 +260,72 @@ const char *obs_module_text(const char *key);
 void obs_register_source_s(const struct obs_source_info *info, std::size_t size);
 #define obs_register_source(info) obs_register_source_s(info, sizeof(struct obs_source_info))
 
+// ---------------------------------------------------------------------------+
+// Phase 3: Graphics API stubs (for composite source video_render)
+// ---------------------------------------------------------------------------+
+
+// Graphics context enter/leave (for loading effects in update()).
+void obs_enter_graphics(void);
+void obs_leave_graphics(void);
+
+// Effect loading and parameter management.
+gs_effect_t *gs_effect_create_from_file(const char *file, const char *cache_filename);
+void         gs_effect_destroy(gs_effect_t *effect);
+gs_eparam_t *gs_effect_get_param_by_name(gs_effect_t *effect, const char *name);
+void         gs_effect_set_float(gs_eparam_t *param, float val);
+void         gs_effect_set_texture(gs_eparam_t *param, gs_texture_t *tex);
+gs_technique_t *gs_effect_get_technique(gs_effect_t *effect, const char *name);
+
+// Technique lifecycle.
+size_t gs_technique_begin(gs_technique_t *tech);
+void   gs_technique_begin_pass(gs_technique_t *tech, size_t pass);
+void   gs_technique_end_pass(gs_technique_t *tech);
+void   gs_technique_end(gs_technique_t *tech);
+
+// Drawing.
+void gs_draw_sprite(gs_texture_t *tex, uint32_t flags, uint32_t width, uint32_t height);
+
+// Blend state (for alpha compositing).
+void gs_blend_state_push(void);
+void gs_blend_state_pop(void);
+void gs_blend_function(int src, int dst);
+
+// Blend enums (matching OBS graphics.h).
+#define GS_BLEND_ZERO            0
+#define GS_BLEND_ONE             1
+#define GS_BLEND_INVSRCALPHA     2
+#define GS_BLEND_SRCALPHA        3
+
+// Module file path (for locating .effect files).
+const char *obs_module_file(const char *file);
+
+// ---------------------------------------------------------------------------+
+// Phase 3: Source lifecycle stubs (for private webcam source, hotkeys)
+// ---------------------------------------------------------------------------+
+
+// Create a private (invisible) source — for internal webcam capture.
+obs_source_t *obs_source_create_private(const char *id, const char *name,
+                                        obs_data_t *settings);
+void          obs_source_release(obs_source_t *source);
+void          obs_source_addref(obs_source_t *source);
+
+// Async source frame access (correct for async sources like webcams).
+obs_source_frame_t *obs_source_get_frame(obs_source_t *source);
+void                obs_source_release_frame(obs_source_t *source,
+                                             obs_source_frame_t *frame);
+
+// Hotkey registration (tied to a source — auto-unregistered on destroy).
+obs_hotkey_id obs_hotkey_register_source(obs_source_t *source,
+                                          const char *name,
+                                          const char *description,
+                                          obs_hotkey_func func,
+                                          void *client_data);
+void          obs_hotkey_unregister(obs_hotkey_id id);
+
+// Frontend dock API (Phase 3 stub — dock itself comes in Étape 6).
+bool obs_frontend_add_dock_by_id(const char *id, const char *title, void *widget);
+void obs_frontend_remove_dock(const char *id);
+
 // ---- Logging (no-op in stub) ----------------------------------------------
 
 #define blog(level, ...) ((void)0)
@@ -244,5 +340,12 @@ int obs_stub_registration_count(void);
 
 // Pointer to the info of the most-recently registered source, or nullptr.
 const struct obs_source_info *obs_stub_last_registered_source(void);
+
+// Phase 3 extended test helpers.
+int obs_stub_graphics_refcount(void);
+int obs_stub_private_sources_created(void);
+int obs_stub_hotkey_count(void);
+int obs_stub_docks_added(void);
+void obs_stub_set_module_data_path(const char *path);
 
 #endif // DANCEHAP_HAVE_OBS

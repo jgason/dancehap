@@ -198,6 +198,7 @@ set(DANCEHAP_SOURCES
     src/clip_player.cpp
     src/show_file.cpp
     src/bspline.cpp
+    src/dancehap_composite.cpp
 )
 if(NOT DANCEHAP_WITH_OBS_DEPS)
     list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)
