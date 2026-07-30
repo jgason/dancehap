@@ -30,6 +30,8 @@ add_executable(dancehap_unit_tests
     unit/test_clip_player.cpp
     unit/test_ai_matte_filter.cpp
     unit/test_matte_engine.cpp
+    unit/test_show_file.cpp
+    unit/test_bspline.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
@@ -46,6 +48,11 @@ target_include_directories(dancehap_unit_tests PRIVATE
 # Absolute path to the test HAP asset (used by demuxer integration tests).
 target_compile_definitions(dancehap_unit_tests PRIVATE
     DANCEHAP_TEST_ASSET="${CMAKE_SOURCE_DIR}/tests/assets/sample_hapa_5s.mov"
+)
+
+# Absolute path to the .dhp test assets directory (Phase 3 show file parser).
+target_compile_definitions(dancehap_unit_tests PRIVATE
+    DANCEHAP_TEST_ASSETS_DIR="${CMAKE_SOURCE_DIR}/tests/assets"
 )
 
 target_compile_features(dancehap_unit_tests PRIVATE cxx_std_17)

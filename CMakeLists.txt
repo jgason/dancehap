@@ -165,6 +165,20 @@ if(DANCEHAP_WITH_ONNXRUNTIME)
     endif()
 endif()
 
+# --- nlohmann/json (Phase 3 show file parser) -------------------------------
+# Header-only single-file JSON library (MIT, ADR-005 compatible).
+# Used by show_file.cpp to parse .dhp files with allow_exceptions=false so
+# a malformed show file NEVER throws inside OBS (returns a discarded json
+# that we check with is_discarded()). FetchContent pattern identical to
+# Snappy. Version 3.12.0 provides json::parse(..., nullptr, true,
+# allow_exceptions=false) and is_discarded().
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # --- Plugin object library (shared between MODULE and unit tests) -------
 # We compile plugin + hap_clip_source once into an OBJECT library so both
 # the MODULE target (the actual OBS plugin .dll/.so) and the unit-test
@@ -182,6 +196,8 @@ set(DANCEHAP_SOURCES
     src/hap_decoder.cpp
     src/audio_decoder.cpp
     src/clip_player.cpp
+    src/show_file.cpp
+    src/bspline.cpp
 )
 if(NOT DANCEHAP_WITH_OBS_DEPS)
     list(APPEND DANCEHAP_SOURCES src/obs_stub.cpp)
@@ -224,6 +240,13 @@ if(DANCEHAP_HAVE_ONNXRUNTIME)
     target_include_directories(dancehap_objs PRIVATE ${ONNXRuntime_INCLUDE_DIRS})
     target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_ONNXRUNTIME_LIB})
 endif()
+
+# nlohmann/json is always available (FetchContent) — link header-only lib to
+# the object library so show_file.cpp can #include <nlohmann/json.hpp>.
+# Header-only: no transitive link needed on the MODULE target, but link the
+# interface so include dirs propagate (OBJECT libs don't propagate usage
+# requirements, so we link explicitly here AND on the MODULE below).
+target_link_libraries(dancehap_objs PRIVATE nlohmann_json::nlohmann_json)
 
 # --- Debug solid-color override ---------------------------------------------
 # When ON, the decoder uploads a solid magenta BGRA texture instead of the
@@ -271,6 +294,9 @@ if(DANCEHAP_HAVE_ONNXRUNTIME)
     target_include_directories(dancehap PRIVATE ${ONNXRuntime_INCLUDE_DIRS})
     target_link_libraries(dancehap PRIVATE ${DANCEHAP_ONNXRUNTIME_LIB})
 endif()
+
+# nlohmann/json header-only lib for the MODULE (show file parser).
+target_link_libraries(dancehap PRIVATE nlohmann_json::nlohmann_json)
 
 # OBS plugins use no "lib" prefix and a platform-specific extension.
 set_target_properties(dancehap PROPERTIES PREFIX "")
