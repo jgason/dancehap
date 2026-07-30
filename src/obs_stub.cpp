@@ -11,6 +11,8 @@
 
 #ifndef DANCEHAP_HAVE_OBS
 
+#include <chrono>
+
 // ---------------------------------------------------------------------------
 // Stub global state (for test verification)
 // ---------------------------------------------------------------------------
@@ -30,6 +32,11 @@ int g_hotkey_count = 0;
 uint64_t g_next_hotkey_id = 1;
 int g_docks_added = 0;
 std::string g_module_data_path = "data/";
+
+// Phase 3 Étapes 5-8 stub state (declared here so obs_stub_reset can zero them).
+int g_textures_created = 0;
+int g_textures_destroyed = 0;
+int g_audio_output_count = 0;
 
 } // anonymous namespace
 
@@ -253,6 +260,10 @@ void obs_stub_reset(void)
     g_next_hotkey_id = 1;
     g_docks_added = 0;
     g_module_data_path = "data/";
+    // Phase 3 Étapes 5-8 reset
+    g_textures_created = 0;
+    g_textures_destroyed = 0;
+    g_audio_output_count = 0;
 }
 
 int obs_stub_registration_count(void)
@@ -394,6 +405,37 @@ void obs_stub_set_module_data_path(const char *path)
 }
 
 // ---------------------------------------------------------------------------+
+// Phase 3 Étape 5: Texture creation stubs (for webcam frame upload)
+// ---------------------------------------------------------------------------+
+
+// g_textures_created / g_textures_destroyed are declared in the anonymous
+// namespace at the top of this file (so obs_stub_reset can zero them).
+
+gs_texture_t *gs_texture_create(uint32_t width, uint32_t height,
+                                  enum gs_color_format /*format*/,
+                                  uint32_t /*levels*/,
+                                  const uint8_t **data,
+                                  uint32_t /*flags*/)
+{
+    if (data) {
+        // Verify non-null data (caller passed a real pixel buffer).
+        (void)data; // stub: we don't copy the data, just return a sentinel.
+    }
+    ++g_textures_created;
+    // Return a unique fake non-null pointer each call.
+    static uint64_t counter = 0x1000;
+    counter += 0x100;
+    return reinterpret_cast<gs_texture_t *>(counter);
+}
+
+void gs_texture_destroy(gs_texture_t *tex)
+{
+    if (tex) {
+        ++g_textures_destroyed;
+    }
+}
+
+// ---------------------------------------------------------------------------+
 // Phase 3: Source lifecycle stubs (private sources, frames, hotkeys)
 // ---------------------------------------------------------------------------+
 
@@ -440,7 +482,7 @@ void obs_source_release_frame(obs_source_t * /*source*/,
 // Phase 3: Hotkey stubs
 // ---------------------------------------------------------------------------+
 
-// (g_hotkey_count, g_next_hotkey_id are in the anon namespace.)
+// (g_hotkey_count, g_next_hotkey_id are in the anonymous namespace.)
 
 obs_hotkey_id obs_hotkey_register_source(obs_source_t * /*source*/,
                                           const char * /*name*/,
@@ -462,7 +504,7 @@ void obs_hotkey_unregister(obs_hotkey_id /*id*/)
 // Phase 3: Frontend dock stubs
 // ---------------------------------------------------------------------------+
 
-// (g_docks_added is in the anon namespace.)
+// (g_docks_added is in the anonymous namespace.)
 
 bool obs_frontend_add_dock_by_id(const char * /*id*/, const char * /*title*/,
                                   void * /*widget*/)
@@ -477,6 +519,33 @@ void obs_frontend_remove_dock(const char * /*id*/)
 }
 
 // ---------------------------------------------------------------------------+
+// Phase 3 Étape 8: Audio output stubs
+// ---------------------------------------------------------------------------+
+
+// g_audio_output_count is declared in the anonymous namespace at the top
+// of this file (so obs_stub_reset can zero it).
+
+void obs_source_output_audio(obs_source_t *source,
+                              const struct obs_source_audio *audio)
+{
+    if (!source || !audio) return;
+    // Stub: count calls so tests can verify audio routing happened.
+    if (audio->frames > 0) {
+        ++g_audio_output_count;
+    }
+}
+
+int64_t os_gettime_ns(void)
+{
+    // Stub: return a monotonically increasing fake timestamp.
+    // Uses C++ steady_clock for a real monotonic clock that's testable.
+    static auto start = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start);
+    return static_cast<int64_t>(ns.count());
+}
+
+// ---------------------------------------------------------------------------+
 // Phase 3: Test helpers (extended)
 // ---------------------------------------------------------------------------+
 
@@ -485,7 +554,11 @@ int obs_stub_private_sources_created(void) { return g_private_sources_created; }
 int obs_stub_hotkey_count(void) { return g_hotkey_count; }
 int obs_stub_docks_added(void) { return g_docks_added; }
 
-// Reset Phase 3 stub state (called by obs_stub_reset above — also reset here
+int obs_stub_textures_created(void) { return g_textures_created; }
+int obs_stub_textures_destroyed(void) { return g_textures_destroyed; }
+int obs_stub_audio_output_count(void) { return g_audio_output_count; }
+
+// Reset Phase 3 stub state (called from obs_stub_reset above — also reset here
 // so the extended state is zeroed alongside the base state).
 // This is called from within obs_stub_reset() via a mechanism below.
 

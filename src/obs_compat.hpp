@@ -300,6 +300,27 @@ void gs_blend_function(int src, int dst);
 const char *obs_module_file(const char *file);
 
 // ---------------------------------------------------------------------------+
+// Phase 3: Graphics texture creation (for webcam frames upload)
+// ---------------------------------------------------------------------------+
+
+// Texture format enum (subset matching OBS graphics.h).
+enum gs_color_format {
+    GS_BGRA = 1,
+    GS_RGBA = 4,
+    GS_R8   = 7,
+};
+
+#define GS_ZS_NONE 0
+
+// Create a 2D texture from raw pixel data.
+gs_texture_t *gs_texture_create(uint32_t width, uint32_t height,
+                                  enum gs_color_format format,
+                                  uint32_t levels,
+                                  const uint8_t **data,
+                                  uint32_t flags);
+void           gs_texture_destroy(gs_texture_t *tex);
+
+// ---------------------------------------------------------------------------+
 // Phase 3: Source lifecycle stubs (for private webcam source, hotkeys)
 // ---------------------------------------------------------------------------+
 
@@ -326,6 +347,52 @@ void          obs_hotkey_unregister(obs_hotkey_id id);
 bool obs_frontend_add_dock_by_id(const char *id, const char *title, void *widget);
 void obs_frontend_remove_dock(const char *id);
 
+// ---------------------------------------------------------------------------+
+// Phase 3 Étape 8: Audio output API stubs
+// ---------------------------------------------------------------------------+
+
+// Audio format enum (subset matching OBS audio-io.h).
+enum audio_format {
+    AUDIO_FORMAT_UNKNOWN = 0,
+    AUDIO_FORMAT_U8BIT,
+    AUDIO_FORMAT_U8BIT_PLANAR,
+    AUDIO_FORMAT_16BIT,
+    AUDIO_FORMAT_16BIT_PLANAR,
+    AUDIO_FORMAT_32BIT,
+    AUDIO_FORMAT_32BIT_PLANAR,
+    AUDIO_FORMAT_FLOAT,
+    AUDIO_FORMAT_FLOAT_PLANAR,
+};
+
+// Speaker layout enum (subset matching OBS audio-io.h).
+enum speaker_layout {
+    SPEAKERS_UNKNOWN = 0,
+    SPEAKERS_MONO,
+    SPEAKERS_STEREO,
+    SPEAKERS_2POINT1,
+    SPEAKERS_4POINT0,
+    SPEAKERS_4POINT1,
+    SPEAKERS_5POINT1,
+    SPEAKERS_7POINT1,
+};
+
+// Audio output struct (matches OBS obs-output.h obs_source_audio).
+struct obs_source_audio {
+    const uint8_t *data[8];
+    uint32_t       frames;
+    enum speaker_layout speakers;
+    enum audio_format   format;
+    uint32_t       samples_per_sec;
+    int64_t        timestamp;
+};
+
+// Push audio data to OBS (called from video_tick to route audio).
+void obs_source_output_audio(obs_source_t *source,
+                              const struct obs_source_audio *audio);
+
+// High-resolution timer (for audio timestamps).
+int64_t os_gettime_ns(void);
+
 // ---- Logging (no-op in stub) ----------------------------------------------
 
 #define blog(level, ...) ((void)0)
@@ -347,5 +414,10 @@ int obs_stub_private_sources_created(void);
 int obs_stub_hotkey_count(void);
 int obs_stub_docks_added(void);
 void obs_stub_set_module_data_path(const char *path);
+
+// Phase 3 Étapes 5-8 test helpers.
+int obs_stub_textures_created(void);
+int obs_stub_textures_destroyed(void);
+int obs_stub_audio_output_count(void);
 
 #endif // DANCEHAP_HAVE_OBS
