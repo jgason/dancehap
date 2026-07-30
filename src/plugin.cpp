@@ -21,6 +21,7 @@
 #include "hap_clip_source.hpp"
 #include "ai_matte_filter.hpp"
 #include "dancehap_composite.hpp"
+#include "dancehap_dock.hpp"
 
 // ---------------------------------------------------------------------------
 // Module lifecycle
@@ -36,13 +37,14 @@ bool obs_module_load(void)
     register_hap_clip_source();
     register_ai_matte_filter();
     register_dancehap_composite_source();
+    register_dancehap_dock();
     return true;
 }
 
 /// Called by OBS when the plugin is unloaded (OBS shutting down).
 void obs_module_unload(void)
 {
-    // Phase 1.0: no resources to release.
+    unregister_dancehap_dock();
 }
 
 /// Called by OBS after all modules have been loaded.
