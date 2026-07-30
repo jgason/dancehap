@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.6.0
+    VERSION 0.7.0
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )
@@ -338,7 +338,7 @@ endif()
 
 # --- Status summary -----------------------------------------------------
 message(STATUS "=========================================================")
-message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 2 matting")
+message(STATUS "DanceHAP ${PROJECT_VERSION} — Phase 3 show file + composite")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Platform     : ${CMAKE_SYSTEM_NAME} (${CMAKE_SYSTEM_PROCESSOR})")
 message(STATUS "  OBS deps     : ${DANCEHAP_WITH_OBS_DEPS}")
