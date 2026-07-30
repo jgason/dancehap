@@ -1,0 +1,52 @@
+{
+  "version": "2.0",
+  "show": {
+    "name": "Simple Show",
+    "duration": 60.0,
+    "created": "2026-07-30"
+  },
+  "webcam": {
+    "device": "default",
+    "resolution": "1280x720",
+    "fps": 30
+  },
+  "matting": {
+    "model": "rvm_mobilenetv3",
+    "threshold": 0.5
+  },
+  "dlayers": {
+    "dlayer1_background": {
+      "clips": [
+        {
+          "id": "bg1",
+          "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+          "start": 0.0,
+          "duration": 30.0,
+          "loop": true,
+          "crossfade_in": 0.0,
+          "crossfade_out": 1.0
+        }
+      ],
+      "opacity_keyframes": [
+        { "time": 0.0, "value": 1.0 },
+        { "time": 60.0, "value": 1.0 }
+      ]
+    },
+    "dlayer2_live": {
+      "opacity_keyframes": [
+        { "time": 0.0, "value": 0.0 }
+      ]
+    },
+    "dlayer3_overlay": {
+      "clips": [],
+      "opacity_keyframes": [
+        { "time": 0.0, "value": 0.0 }
+      ]
+    }
+  },
+  "audio_tracks": [],
+  "markers": [
+    { "time": 0.0, "name": "Start" },
+    { "time": 30.0, "name": "Cue 2" }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "version": "2.0",
+  "show": {
+    "name": "Full Show Take That Circus",
+    "duration": 3600.0,
+    "created": "2026-07-30"
+  },
+  "webcam": {
+    "device": "HD Pro Webcam C920",
+    "resolution": "1920x1080",
+    "fps": 30
+  },
+  "matting": {
+    "model": "mediapipe_selfie",
+    "threshold": 0.7,
+    "feather": 2,
+    "contour": true,
+    "mask_expansion": 0
+  },
+  "dlayers": {
+    "dlayer1_background": {
+      "clips": [
+        {
+          "id": "bg_patience",
+          "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+          "start": 0.0,
+          "duration": 30.0,
+          "loop": true,
+          "crossfade_in": 0.5,
+          "crossfade_out": 1.0
+        },
+        {
+          "id": "bg_shine",
+          "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+          "start": 30.0,
+          "duration": 30.0,
+          "loop": true,
+          "crossfade_in": 1.0,
+          "crossfade_out": 2.0
+        }
+      ],
+      "opacity_keyframes": [
+        { "time": 0.0, "value": 1.0, "handle_right": [0.1, 0.0] },
+        { "time": 15.0, "value": 0.8, "handle_left": [-0.1, 0.0], "handle_right": [0.1, 0.0] },
+        { "time": 45.0, "value": 0.5 },
+        { "time": 60.0, "value": 1.0, "handle_left": [-0.1, 0.0] }
+      ]
+    },
+    "dlayer2_live": {
+      "opacity_keyframes": [
+        { "time": 0.0, "value": 0.0 },
+        { "time": 10.0, "value": 1.0 },
+        { "time": 50.0, "value": 1.0 },
+        { "time": 60.0, "value": 0.0 }
+      ]
+    },
+    "dlayer3_overlay": {
+      "clips": [
+        {
+          "id": "ov_logo",
+          "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+          "start": 5.0,
+          "duration": 10.0,
+          "loop": false,
+          "crossfade_in": 0.5,
+          "crossfade_out": 0.5
+        }
+      ],
+      "opacity_keyframes": [
+        { "time": 5.0, "value": 1.0 },
+        { "time": 15.0, "value": 1.0 }
+      ]
+    }
+  },
+  "audio_tracks": [
+    {
+      "id": "track_main",
+      "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+      "start": 0.0,
+      "volume": 0.8
+    },
+    {
+      "id": "track_cue",
+      "file": "/root/dancehap/tests/assets/sample_hapa_5s.mov",
+      "start": 30.0,
+      "volume": 1.0
+    }
+  ],
+  "markers": [
+    { "time": 0.0, "name": "Patience" },
+    { "time": 30.0, "name": "Shine" },
+    { "time": 45.0, "name": "Greatest Day" }
+  ]
+}
