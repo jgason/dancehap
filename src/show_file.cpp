@@ -74,20 +74,25 @@ bool get_string(const json &j, const char *key, std::string &out)
 }
 
 // Parse a Keyframe (optional handle_left / handle_right arrays).
+// Uses type-safe helpers — NEVER throws (Virgile defect #1 fix).
 Keyframe parse_keyframe(const json &jf)
 {
     Keyframe kf;
-    jf.at("time").get_to(kf.time);
-    jf.at("value").get_to(kf.value);
+    double t = 0.0, v = 0.0;
+    if (get_double(jf, "time", t))  kf.time = t;
+    if (get_double(jf, "value", v)) kf.value = v;
+
     if (jf.contains("handle_left") && jf["handle_left"].is_array()
-        && jf["handle_left"].size() == 2) {
+        && jf["handle_left"].size() == 2
+        && jf["handle_left"][0].is_number() && jf["handle_left"][1].is_number()) {
         std::array<double,2> h{};
         h[0] = jf["handle_left"][0].get<double>();
         h[1] = jf["handle_left"][1].get<double>();
         kf.handle_left = h;
     }
     if (jf.contains("handle_right") && jf["handle_right"].is_array()
-        && jf["handle_right"].size() == 2) {
+        && jf["handle_right"].size() == 2
+        && jf["handle_right"][0].is_number() && jf["handle_right"][1].is_number()) {
         std::array<double,2> h{};
         h[0] = jf["handle_right"][0].get<double>();
         h[1] = jf["handle_right"][1].get<double>();
@@ -96,7 +101,7 @@ Keyframe parse_keyframe(const json &jf)
     return kf;
 }
 
-// Validate keyframes: time >= 0, value in [0,1].
+// Validate keyframes: time >= 0, value in [0,1], times non-decreasing (Virgile #2).
 void validate_keyframes(ParseResult &r, const std::vector<Keyframe> &kfs,
                         const std::string &prefix)
 {
@@ -108,6 +113,10 @@ void validate_keyframes(ParseResult &r, const std::vector<Keyframe> &kfs,
         if (kfs[i].value < 0.0 || kfs[i].value > 1.0) {
             err(r, prefix + ".opacity_keyframes[" + std::to_string(i)
                 + ".value", "keyframe value must be in [0.0, 1.0]");
+        }
+        if (i > 0 && kfs[i].time < kfs[i-1].time) {
+            err(r, prefix + ".opacity_keyframes[" + std::to_string(i)
+                + ".time", "keyframe time must be >= previous keyframe time");
         }
     }
 }
@@ -168,6 +177,11 @@ void parse_dlayer(const json &jn, DLayerConfig &dl, ParseResult &r,
             if (clip.crossfade_out < 0.0) {
                 err(r, prefix + ".clips.crossfade_out",
                     "crossfade_out must be >= 0");
+            }
+            // Duration validation: must be >= 0 (Virgile #3).
+            if (clip.duration < 0.0) {
+                err(r, prefix + ".clips.duration",
+                    "clip duration must be >= 0");
             }
             dl.clips.push_back(std::move(clip));
         }
@@ -338,14 +352,20 @@ ParseResult parse_show_file(const std::string &path)
         }
     }
 
-    // 9. markers (optional).
+    // 9. markers (optional). Validate time >= 0 (Virgile #4).
     if (j.contains("markers") && j["markers"].is_array()) {
+        size_t mi = 0;
         for (const auto &jm : j["markers"]) {
-            if (!jm.is_object()) continue;
+            if (!jm.is_object()) { mi++; continue; }
             Marker m;
             get_double(jm, "time", m.time);
             get_string(jm, "name", m.name);
+            if (m.time < 0.0) {
+                err(r, "markers[" + std::to_string(mi) + "].time",
+                    "marker time must be >= 0");
+            }
             show.markers.push_back(std::move(m));
+            mi++;
         }
     }
 
