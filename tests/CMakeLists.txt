@@ -32,6 +32,7 @@ add_executable(dancehap_unit_tests
     unit/test_matte_engine.cpp
     unit/test_show_file.cpp
     unit/test_bspline.cpp
+    unit/test_composite.cpp
 )
 
 target_link_libraries(dancehap_unit_tests PRIVATE
