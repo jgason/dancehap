@@ -70,17 +70,17 @@ if(DANCEHAP_WITH_OBS_DEPS)
         # Fallback: find_package may fail because the config file calls
         # find_dependency(libobs) which may not resolve in all CI setups.
         # Try to locate the library directly in the OBS build tree.
-        set(_frontend_api_dir "${obs-frontend-api_DIR}")
-        if(NOT _frontend_api_dir)
-            set(_frontend_api_dir "$ENV{obs-frontend-api_DIR}")
-        endif()
-        # Search common locations in the OBS build tree.
+        # Xcode puts the dylib deep in the build tree:
+        #   obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary/
+        # Make/MSVC puts it in obs-build/frontend/api/Release/
         find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api
             PATHS
-                "${_frontend_api_dir}/Release"
-                "${_frontend_api_dir}"
+                "${obs-frontend-api_DIR}/Release"
+                "${obs-frontend-api_DIR}"
                 "$ENV{PWD}/obs-build/frontend/api/Release"
                 "$ENV{PWD}/obs-build/frontend/api"
+                "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary"
+                "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/x86_64/Binary"
             NO_DEFAULT_PATH
         )
         if(OBS_FRONTEND_API_LIB)
