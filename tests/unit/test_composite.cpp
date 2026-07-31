@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
 #include <filesystem>
 #include <fstream>
@@ -43,18 +44,21 @@ find_property(const obs_properties *props, const char *name)
 }
 
 // Write a minimal valid .dhp to a temp file for composite tests.
+// Cross-platform: uses std::tmpnam() + std::ofstream (mkstemp is POSIX-only
+// and not available on MSVC — caused CI failure on Windows, same pattern as
+// test_hap_demuxer.cpp / test_show_file.cpp).
 static std::string write_test_dhp(const std::string &content)
 {
-    char tmpl[] = "/tmp/dancehap_composite_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) return {};
-    FILE *fp = fdopen(fd, "w");
-    if (!fp) { close(fd); return {}; }
-    std::fputs(content.c_str(), fp);
-    std::fclose(fp);
-    std::string final = std::string(tmpl) + ".dhp";
-    rename(tmpl, final.c_str());
-    return final;
+    char tmpl_buf[L_tmpnam];
+    if (std::tmpnam(tmpl_buf) == nullptr) return {};
+    std::string path = std::string(tmpl_buf) + ".dhp";
+
+    std::ofstream f(path, std::ios::trunc);
+    if (!f.is_open()) return {};
+    f << content;
+    f.close();
+
+    return path;
 }
 
 static void cleanup(const std::string &p)

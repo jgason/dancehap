@@ -13,7 +13,7 @@
 #include "show_file.hpp"
 
 #include <cstdio>
-#include <unistd.h>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -28,20 +28,22 @@ std::string asset(const char *name)
 }
 
 // Write a temp .dhp with arbitrary content (for invalid-content tests).
-// mkstemp requires the template to END with exactly 6 'X' chars, so we
-// create the file then rename it to the .dhp suffix.
+// Cross-platform: uses std::tmpnam() + std::ofstream (mkstemp is POSIX-only and
+// not available on MSVC — caused CI failure on Windows, same pattern as
+// test_hap_demuxer.cpp). std::tmpnam is fine for tests (we own the file).
+// We generate a temp name, append the .dhp suffix, then write via ofstream.
 std::string write_temp(const std::string &content)
 {
-    char tmpl[] = "/tmp/dancehap_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) return {};
-    FILE *fp = fdopen(fd, "w");
-    if (!fp) { close(fd); return {}; }
-    std::fputs(content.c_str(), fp);
-    std::fclose(fp);
-    std::string final = std::string(tmpl) + ".dhp";
-    rename(tmpl, final.c_str());
-    return final;
+    char tmpl_buf[L_tmpnam];
+    if (std::tmpnam(tmpl_buf) == nullptr) return {};
+    std::string path = std::string(tmpl_buf) + ".dhp";
+
+    std::ofstream f(path, std::ios::trunc);
+    if (!f.is_open()) return {};
+    f << content;
+    f.close();
+
+    return path;
 }
 
 void cleanup(const std::string &p)

@@ -101,6 +101,15 @@ jobs:
           # some single-config generators. `libobs` works everywhere.
           cmake --build obs-build --target libobs --config Release --parallel
 
+          # Build the OBS frontend API library (obs-frontend-api) too.
+          # The dock widget (Phase 3 Étape 6) calls obs_frontend_add_dock_by_id /
+          # obs_frontend_remove_dock which live in this library, NOT in libobs.
+          # frontend/CMakeLists.txt unconditionally runs add_subdirectory(api)
+          # BEFORE the ENABLE_FRONTEND=OFF guard, so the target exists even with
+          # the frontend/UI disabled. Without this, the linker fails:
+          #   "Undefined symbols: _obs_frontend_add_dock_by_id / _obs_frontend_remove_dock"
+          cmake --build obs-build --target obs-frontend-api --config Release --parallel
+
       - name: Setup OBS SDK (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -136,6 +145,11 @@ jobs:
 
           # Build libobs target (Xcode exposes it as `libobs`, not `obs`).
           cmake --build obs-build --target libobs --config Release --parallel
+
+          # Build the OBS frontend API library too (see Windows step comment).
+          # The dock widget links against obs_frontend_add_dock_by_id /
+          # obs_frontend_remove_dock which live here, not in libobs.
+          cmake --build obs-build --target obs-frontend-api --config Release --parallel
 
       # ==================================================================
       # Phase 2: Build DanceHAP plugin MODULE with real OBS headers
@@ -202,6 +216,7 @@ jobs:
             -DDANCEHAP_WITH_OBS_DEPS=ON \
             -DCMAKE_PREFIX_PATH="$PREFIX_PATHS" \
             -Dlibobs_DIR="$PWD/obs-build/libobs" \
+            -Dobs-frontend-api_DIR="$PWD/obs-build/frontend/api" \
             -DOBS_FRONTEND_API_DIR="$PWD/obs-studio-${{ env.OBS_VERSION }}/frontend/api" \
             $EXTRA_ARGS
 

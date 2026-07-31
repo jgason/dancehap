@@ -54,6 +54,21 @@ if(DANCEHAP_WITH_OBS_DEPS)
         message(STATUS "OBS SDK: using FindLibObs.cmake (LibObs::LibObs)")
         set(DANCEHAP_OBS_LIB LibObs::LibObs)
     endif()
+
+    # OBS frontend API library (obs-frontend-api) — provides
+    # obs_frontend_add_dock_by_id / obs_frontend_remove_dock used by the dock
+    # widget (Phase 3 Étape 6). These symbols live in a SEPARATE shared library
+    # from libobs (frontend/api/ in the OBS source tree, NOT libobs/). The CI
+    # builds the `obs-frontend-api` target from the OBS source tree and points
+    # `obs-frontend-api_DIR` at the generated config. Without this, the linker
+    # fails with "Undefined symbols: _obs_frontend_add_dock_by_id".
+    find_package(obs-frontend-api CONFIG QUIET)
+    if(TARGET OBS::frontend-api)
+        set(DANCEHAP_FRONTEND_API_LIB OBS::frontend-api)
+        message(STATUS "OBS frontend API: found (OBS::frontend-api)")
+    else()
+        message(STATUS "OBS frontend API: not found — dock registration will be a no-op at link time")
+    endif()
 endif()
 
 # --- FFmpeg dependency (optional, for real HapDemuxer) ----------------------
@@ -241,6 +256,10 @@ if(DANCEHAP_WITH_OBS_DEPS)
     if(DEFINED OBS_FRONTEND_API_DIR AND EXISTS "${OBS_FRONTEND_API_DIR}")
         target_include_directories(dancehap_objs PRIVATE "${OBS_FRONTEND_API_DIR}")
     endif()
+    # Link the OBS frontend API library (obs_frontend_add_dock_by_id etc.).
+    if(DEFINED DANCEHAP_FRONTEND_API_LIB)
+        target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_FRONTEND_API_LIB})
+    endif()
 endif()
 
 # FFmpeg linking for real demuxer (only when WITH_OBS_DEPS + FFmpeg found).
@@ -307,6 +326,11 @@ endif()
 # Propagate OBS definitions to the MODULE link step.
 if(DANCEHAP_WITH_OBS_DEPS)
     target_link_libraries(dancehap PRIVATE ${DANCEHAP_OBS_LIB})
+    # Frontend API lib must also be linked into the MODULE (OBJECT libraries
+    # do not propagate transitive link dependencies).
+    if(DEFINED DANCEHAP_FRONTEND_API_LIB)
+        target_link_libraries(dancehap PRIVATE ${DANCEHAP_FRONTEND_API_LIB})
+    endif()
 endif()
 
 # FFmpeg libs must also be linked into the MODULE (OBJECT libraries do not
