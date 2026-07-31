@@ -235,6 +235,12 @@ target_compile_features(dancehap_objs PRIVATE cxx_std_17)
 if(DANCEHAP_WITH_OBS_DEPS)
     target_link_libraries(dancehap_objs PRIVATE ${DANCEHAP_OBS_LIB})
     target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_OBS=1)
+    # OBS frontend API header (obs-frontend-api.h) lives in frontend/api/ in the
+    # OBS source tree, NOT in libobs/. We need it for dock registration.
+    # The CI sets OBS_FRONTEND_API_DIR to the frontend/api path in the OBS source.
+    if(DEFINED OBS_FRONTEND_API_DIR AND EXISTS "${OBS_FRONTEND_API_DIR}")
+        target_include_directories(dancehap_objs PRIVATE "${OBS_FRONTEND_API_DIR}")
+    endif()
 endif()
 
 # FFmpeg linking for real demuxer (only when WITH_OBS_DEPS + FFmpeg found).

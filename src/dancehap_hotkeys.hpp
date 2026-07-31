@@ -11,9 +11,7 @@
 #include <vector>
 
 #ifdef DANCEHAP_HAVE_OBS
-struct obs_source;
-struct obs_hotkey;
-using obs_hotkey_id = int;
+#include "obs_compat.hpp"  // brings in real OBS types including obs_hotkey_id (size_t)
 #endif
 
 /// Manages hotkey lifecycle for a DanceHAP composite source.

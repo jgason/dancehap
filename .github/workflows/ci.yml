@@ -202,6 +202,7 @@ jobs:
             -DDANCEHAP_WITH_OBS_DEPS=ON \
             -DCMAKE_PREFIX_PATH="$PREFIX_PATHS" \
             -Dlibobs_DIR="$PWD/obs-build/libobs" \
+            -DOBS_FRONTEND_API_DIR="$PWD/obs-studio-${{ env.OBS_VERSION }}/frontend/api" \
             $EXTRA_ARGS
 
       - name: Build plugin
