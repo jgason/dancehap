@@ -67,7 +67,28 @@ if(DANCEHAP_WITH_OBS_DEPS)
         set(DANCEHAP_FRONTEND_API_LIB OBS::frontend-api)
         message(STATUS "OBS frontend API: found (OBS::frontend-api)")
     else()
-        message(STATUS "OBS frontend API: not found — dock registration will be a no-op at link time")
+        # Fallback: find_package may fail because the config file calls
+        # find_dependency(libobs) which may not resolve in all CI setups.
+        # Try to locate the library directly in the OBS build tree.
+        set(_frontend_api_dir "${obs-frontend-api_DIR}")
+        if(NOT _frontend_api_dir)
+            set(_frontend_api_dir "$ENV{obs-frontend-api_DIR}")
+        endif()
+        # Search common locations in the OBS build tree.
+        find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api
+            PATHS
+                "${_frontend_api_dir}/Release"
+                "${_frontend_api_dir}"
+                "$ENV{PWD}/obs-build/frontend/api/Release"
+                "$ENV{PWD}/obs-build/frontend/api"
+            NO_DEFAULT_PATH
+        )
+        if(OBS_FRONTEND_API_LIB)
+            set(DANCEHAP_FRONTEND_API_LIB "${OBS_FRONTEND_API_LIB}")
+            message(STATUS "OBS frontend API: found via find_library: ${OBS_FRONTEND_API_LIB}")
+        else()
+            message(STATUS "OBS frontend API: not found — dock registration will be a no-op at link time")
+        endif()
     endif()
 endif()
 
