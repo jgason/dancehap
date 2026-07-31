@@ -70,24 +70,34 @@ if(DANCEHAP_WITH_OBS_DEPS)
         # Fallback: find_package may fail because the config file calls
         # find_dependency(libobs) which may not resolve in all CI setups.
         # Try to locate the library directly in the OBS build tree.
-        # Xcode puts the dylib deep in the build tree:
-        #   obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary/
-        # Make/MSVC puts it in obs-build/frontend/api/Release/
-        # macOS Xcode doesn't prefix dylib names with 'lib'.
-        find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api libobs-frontend-api
-            PATHS
-                "${obs-frontend-api_DIR}/Release"
-                "${obs-frontend-api_DIR}"
-                "${OBS_FRONTEND_API_LIB_DIR}"
-                "$ENV{PWD}/obs-build/frontend/api/Release"
-                "$ENV{PWD}/obs-build/frontend/api"
-                "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary"
+        # macOS Xcode creates a universal dylib at:
+        #   obs-build/frontend/api/Release/obs-frontend-api.dylib
+        # Windows MSVC creates:
+        #   obs-build/frontend/api/Release/obs-frontend-api.lib
+        # Xcode also has per-arch dylibs deep in the build tree.
+        set(_frontend_search_paths
+            "${obs-frontend-api_DIR}/Release"
+            "${obs-frontend-api_DIR}"
+            "${OBS_FRONTEND_API_LIB_DIR}"
         )
-        # Debug: show what we searched for.
-        message(STATUS "OBS frontend API search: NAMES=obs-frontend-api,libobs-frontend-api")
-        message(STATUS "  OBS_FRONTEND_API_LIB_DIR=${OBS_FRONTEND_API_LIB_DIR}")
-        message(STATUS "  obs-frontend-api_DIR=${obs-frontend-api_DIR}")
-        message(STATUS "  result: OBS_FRONTEND_API_LIB=${OBS_FRONTEND_API_LIB}")
+        find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api libobs-frontend-api
+            PATHS ${_frontend_search_paths}
+        )
+        # If find_library still failed, try find_file as a last resort
+        # (find_library can be finicky about suffixes on macOS).
+        if(NOT OBS_FRONTEND_API_LIB)
+            foreach(_dir ${_frontend_search_paths})
+                if(EXISTS "${_dir}/obs-frontend-api.dylib")
+                    set(OBS_FRONTEND_API_LIB "${_dir}/obs-frontend-api.dylib")
+                    message(STATUS "OBS frontend API: found via EXISTS: ${OBS_FRONTEND_API_LIB}")
+                    break()
+                elseif(EXISTS "${_dir}/obs-frontend-api.lib")
+                    set(OBS_FRONTEND_API_LIB "${_dir}/obs-frontend-api.lib")
+                    message(STATUS "OBS frontend API: found via EXISTS: ${OBS_FRONTEND_API_LIB}")
+                    break()
+                endif()
+            endforeach()
+        endif()
         if(OBS_FRONTEND_API_LIB)
             set(DANCEHAP_FRONTEND_API_LIB "${OBS_FRONTEND_API_LIB}")
             message(STATUS "OBS frontend API: found via find_library: ${OBS_FRONTEND_API_LIB}")
