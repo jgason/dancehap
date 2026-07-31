@@ -63,9 +63,10 @@ dancehap::ParseResult parse_dhp_fixture(const char *fixture_name, std::string &t
                             std::istreambuf_iterator<char>());
     src.close();
     auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
-    if (pos != std::string::npos) {
+    while (pos != std::string::npos) {
         dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
                            asset_path);
+        pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov", pos + asset_path.length());
     }
     tmp_path = write_temp(dhp_content);
     return parse_show_file(tmp_path);
