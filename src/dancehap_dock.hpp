@@ -3,11 +3,13 @@
 //
 // dancehap_dock.hpp — Qt6 dock panel for DanceHAP (Phase 3, Étape 6).
 // Minimal dock: Load .dhp, Play/Stop, timecode, markers, DLayer indicators.
-// All Qt code is guarded by #ifdef DANCEHAP_HAVE_OBS — stub mode = no-op.
+// Qt code is guarded by #ifdef DANCEHAP_HAVE_QT — only defined when Qt6 Widgets
+// is found by CMake. In stub mode (no OBS) or when Qt6 is absent, the dock
+// compiles as a no-op (register/unregister are empty functions).
 
 #pragma once
 
-#ifdef DANCEHAP_HAVE_OBS
+#ifdef DANCEHAP_HAVE_QT
 
 #include <QWidget>
 
@@ -53,7 +55,7 @@ private:
     QLabel *dlayer_status_label_ = nullptr;
 };
 
-#endif // DANCEHAP_HAVE_OBS
+#endif // DANCEHAP_HAVE_QT
 
 /// Register the dock with OBS frontend (called from obs_module_load).
 /// No-op in stub mode.

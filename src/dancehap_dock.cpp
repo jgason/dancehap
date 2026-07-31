@@ -2,12 +2,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Don't Blink
 //
 // dancehap_dock.cpp — Qt6 dock implementation (Phase 3, Étape 6).
-// All Qt code is guarded by #ifdef DANCEHAP_HAVE_OBS.
+// Qt code is guarded by #ifdef DANCEHAP_HAVE_QT.
+// The OBS frontend API calls (obs_frontend_add_dock_by_id etc.) are guarded
+// by #ifdef DANCEHAP_HAVE_OBS inside the DANCEHAP_HAVE_QT block.
 
 #include "dancehap_dock.hpp"
 #include "obs_compat.hpp"
 
-#ifdef DANCEHAP_HAVE_OBS
+#ifdef DANCEHAP_HAVE_QT
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -128,19 +130,19 @@ void DanceHAPDock::setDLayerIndicators(bool d1Active, bool d2Active, bool d3Acti
         "  D3: " + status(d3Active));
 }
 
-#endif // DANCEHAP_HAVE_OBS
+#endif // DANCEHAP_HAVE_QT
 
 // ---------------------------------------------------------------------------
-// Registration (no-op in stub mode)
+// Registration (no-op when Qt6 or OBS is not available)
 // ---------------------------------------------------------------------------
 
-#ifdef DANCEHAP_HAVE_OBS
+#if defined(DANCEHAP_HAVE_QT) && defined(DANCEHAP_HAVE_OBS)
 static DanceHAPDock *g_dock = nullptr;
 #endif
 
 void register_dancehap_dock(void)
 {
-#ifdef DANCEHAP_HAVE_OBS
+#if defined(DANCEHAP_HAVE_QT) && defined(DANCEHAP_HAVE_OBS)
     if (g_dock) return;
     g_dock = new DanceHAPDock();
     obs_frontend_add_dock_by_id("dancehap_dock", "DanceHAP", g_dock);
@@ -149,7 +151,7 @@ void register_dancehap_dock(void)
 
 void unregister_dancehap_dock(void)
 {
-#ifdef DANCEHAP_HAVE_OBS
+#if defined(DANCEHAP_HAVE_QT) && defined(DANCEHAP_HAVE_OBS)
     if (g_dock) {
         obs_frontend_remove_dock("dancehap_dock");
         delete g_dock;
