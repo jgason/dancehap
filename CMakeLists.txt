@@ -81,6 +81,7 @@ if(DANCEHAP_WITH_OBS_DEPS)
                 "$ENV{PWD}/obs-build/frontend/api"
                 "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary"
                 "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/x86_64/Binary"
+                "${OBS_FRONTEND_API_LIB_DIR}"
             NO_DEFAULT_PATH
         )
         if(OBS_FRONTEND_API_LIB)

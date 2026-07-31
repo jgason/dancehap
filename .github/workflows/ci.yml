@@ -210,6 +210,14 @@ jobs:
           if [ -n "$QT_PREFIX" ] && [ -d "$QT_PREFIX" ]; then
             PREFIX_PATHS="$QT_PREFIX;$PWD/obs-deps"
           fi
+          # Locate the obs-frontend-api library built in the previous step.
+          # Xcode puts it deep in the build tree; Make/Ninja puts it in frontend/api/Release.
+          FRONTEND_LIB_DIR=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            FRONTEND_LIB_DIR="$PWD/obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary"
+          else
+            FRONTEND_LIB_DIR="$PWD/obs-build/frontend/api/Release"
+          fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DDANCEHAP_BUILD_TESTS=OFF \
@@ -218,6 +226,7 @@ jobs:
             -Dlibobs_DIR="$PWD/obs-build/libobs" \
             -Dobs-frontend-api_DIR="$PWD/obs-build/frontend/api" \
             -DOBS_FRONTEND_API_DIR="$PWD/obs-studio-${{ env.OBS_VERSION }}/frontend/api" \
+            -DOBS_FRONTEND_API_LIB_DIR="$FRONTEND_LIB_DIR" \
             $EXTRA_ARGS
 
       - name: Build plugin
