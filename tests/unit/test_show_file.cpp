@@ -207,24 +207,53 @@ TEST(ShowFile, NegativeDurationReturnsError)
 
 TEST(ShowFile, ParsesSimpleShowSuccessfully)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    // The show_simple.dhp asset has a hardcoded /root/dancehap path that
+    // only exists on the dev machine. Rewrite the file path to match the
+    // actual test asset directory on this machine before parsing.
+    auto asset_path = asset("sample_hapa_5s.mov");
+    std::ifstream src(asset("show_simple.dhp"));
+    std::string dhp_content((std::istreambuf_iterator<char>(src)),
+                            std::istreambuf_iterator<char>());
+    src.close();
+    // Replace the hardcoded path with the actual path on this machine.
+    auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
+    if (pos != std::string::npos) {
+        dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
+                           asset_path);
+    }
+    auto tmp = write_temp(dhp_content);
+    auto r = parse_show_file(tmp);
     EXPECT_TRUE(r) << "errors: " << (r.errors.empty() ? "" : r.errors[0].message);
     ASSERT_TRUE(r.show.has_value());
     const auto &s = *r.show;
     EXPECT_EQ(s.version, "2.0");
     EXPECT_EQ(s.show.name, "Simple Show");
     EXPECT_DOUBLE_EQ(s.show.duration, 60.0);
+    cleanup(tmp);
 }
 
 TEST(ShowFile, SimpleShowWebcamParsed)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    // Same path rewrite as ParsesSimpleShowSuccessfully (see above).
+    auto asset_path = asset("sample_hapa_5s.mov");
+    std::ifstream src(asset("show_simple.dhp"));
+    std::string dhp_content((std::istreambuf_iterator<char>(src)),
+                            std::istreambuf_iterator<char>());
+    src.close();
+    auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
+    if (pos != std::string::npos) {
+        dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
+                           asset_path);
+    }
+    auto tmp = write_temp(dhp_content);
+    auto r = parse_show_file(tmp);
     ASSERT_TRUE(r);
     const auto &w = r.show->webcam;
     EXPECT_EQ(w.device, "default");
     EXPECT_EQ(w.width, 1280);
     EXPECT_EQ(w.height, 720);
     EXPECT_EQ(w.fps, 30);
+    cleanup(tmp);
 }
 
 TEST(ShowFile, SimpleShowMattingParsed)
