@@ -54,18 +54,27 @@ void HotkeyManager::register_markers(const std::vector<std::string> &marker_name
     }
     marker_hotkey_ids.clear();
 
-    // Register new marker hotkeys (1 per marker)
+    // Register new marker hotkeys (1 per marker).
+    // OBS hotkey callbacks are C function pointers — lambdas with captures
+    // cannot convert to function pointers. We store the marker index in a
+    // static vector indexed by hotkey registration order, and pass the index
+    // as the void *data. The callback retrieves the index from data.
+    static std::vector<size_t> s_marker_indices;
+    s_marker_indices.clear();
     for (size_t i = 0; i < marker_names.size(); i++) {
         std::string name = "DanceHAP.Marker." + std::to_string(i);
         std::string desc = "DanceHAP: Jump to " + marker_names[i];
+        s_marker_indices.push_back(i);
         obs_hotkey_id id = obs_hotkey_register_source(source,
             name.c_str(), desc.c_str(),
-            [i](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+            [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
                 if (pressed && data) {
-                    // TODO: call composite->jump_to_marker(i)
+                    size_t idx = reinterpret_cast<size_t>(data);
+                    // TODO: call composite->jump_to_marker(idx)
+                    (void)idx;
                 }
             },
-            composite_ctx);
+            reinterpret_cast<void *>(i));
         marker_hotkey_ids.push_back(id);
     }
 #endif
