@@ -170,13 +170,12 @@ endif()
 # DANCEHAP_HAVE_QT is defined only when Qt6::Widgets is available, which
 # protects the stub mode (no OBS, no Qt needed) and CI environments where
 # Qt6 may not be installed.
+# NOTE: find_package is called here, but target_link_libraries is deferred
+# to after the targets are created (see below, after add_library calls).
 find_package(Qt6 COMPONENTS Widgets QUIET)
 if(Qt6_FOUND)
     set(CMAKE_AUTOMOC ON)
-    target_link_libraries(dancehap PRIVATE Qt6::Widgets)
-    target_link_libraries(dancehap_objs PRIVATE Qt6::Widgets)
-    target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_QT)
-    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_QT)
+    set(DANCEHAP_HAVE_QT TRUE)
     message(STATUS "Qt6: found — dock widget enabled (DANCEHAP_HAVE_QT)")
 else()
     message(STATUS "Qt6: not found — dock widget compiled as no-op")
@@ -290,6 +289,14 @@ target_include_directories(dancehap PRIVATE
 )
 
 target_compile_features(dancehap PRIVATE cxx_std_17)
+
+# Apply Qt6 to both targets (deferred from the find_package block above).
+if(DANCEHAP_HAVE_QT)
+    target_link_libraries(dancehap PRIVATE Qt6::Widgets)
+    target_link_libraries(dancehap_objs PRIVATE Qt6::Widgets)
+    target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_QT)
+    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_QT)
+endif()
 
 # Propagate OBS definitions to the MODULE link step.
 if(DANCEHAP_WITH_OBS_DEPS)

@@ -11,6 +11,10 @@
 
 #ifdef DANCEHAP_HAVE_QT
 
+#ifdef DANCEHAP_HAVE_OBS
+#include <obs-frontend-api.h>
+#endif
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
