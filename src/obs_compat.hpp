@@ -125,8 +125,8 @@ struct obs_hotkey;
 typedef struct obs_hotkey obs_hotkey_t;
 
 // Phase 3: hotkey callback type (matches OBS obs-hotkey.h).
-// Real OBS signature: void (*)(void *data, obs_hotkey_id id, bool pressed).
-typedef void (*obs_hotkey_func)(void *data, obs_hotkey_id id, bool pressed);
+// Real OBS signature: void (*)(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed).
+typedef void (*obs_hotkey_func)(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
 // ---- Enums ----------------------------------------------------------------
 

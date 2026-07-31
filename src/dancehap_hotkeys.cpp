@@ -20,7 +20,7 @@ void HotkeyManager::register_play_stop(const std::string &source_name)
     std::string play_desc = "DanceHAP: Play Show";
     play_hotkey_id = obs_hotkey_register_source(source,
         play_name.c_str(), play_desc.c_str(),
-        [](void *data, obs_hotkey_id, bool pressed) {
+        [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
             if (pressed && data) {
                 // TODO: call composite->play()
             }
@@ -32,7 +32,7 @@ void HotkeyManager::register_play_stop(const std::string &source_name)
     std::string stop_desc = "DanceHAP: Stop Show";
     stop_hotkey_id = obs_hotkey_register_source(source,
         stop_name.c_str(), stop_desc.c_str(),
-        [](void *data, obs_hotkey_id, bool pressed) {
+        [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
             if (pressed && data) {
                 // TODO: call composite->stop()
             }
@@ -60,7 +60,7 @@ void HotkeyManager::register_markers(const std::vector<std::string> &marker_name
         std::string desc = "DanceHAP: Jump to " + marker_names[i];
         obs_hotkey_id id = obs_hotkey_register_source(source,
             name.c_str(), desc.c_str(),
-            [i](void *data, obs_hotkey_id, bool pressed) {
+            [i](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
                 if (pressed && data) {
                     // TODO: call composite->jump_to_marker(i)
                 }
