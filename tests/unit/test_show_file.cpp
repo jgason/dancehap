@@ -51,6 +51,26 @@ void cleanup(const std::string &p)
     if (!p.empty()) std::filesystem::remove(p);
 }
 
+// Parse show_simple.dhp with the hardcoded /root/dancehap path rewritten
+// to the actual asset directory on this machine. All tests that use
+// show_simple.dhp must call this instead of parse_show_file(asset(...)).
+// Returns the parsed result and sets tmp_path for later cleanup.
+dancehap::ParseResult parse_simple_show(std::string &tmp_path)
+{
+    auto asset_path = asset("sample_hapa_5s.mov");
+    std::ifstream src(asset("show_simple.dhp"));
+    std::string dhp_content((std::istreambuf_iterator<char>(src)),
+                            std::istreambuf_iterator<char>());
+    src.close();
+    auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
+    if (pos != std::string::npos) {
+        dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
+                           asset_path);
+    }
+    tmp_path = write_temp(dhp_content);
+    return parse_show_file(tmp_path);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -207,22 +227,8 @@ TEST(ShowFile, NegativeDurationReturnsError)
 
 TEST(ShowFile, ParsesSimpleShowSuccessfully)
 {
-    // The show_simple.dhp asset has a hardcoded /root/dancehap path that
-    // only exists on the dev machine. Rewrite the file path to match the
-    // actual test asset directory on this machine before parsing.
-    auto asset_path = asset("sample_hapa_5s.mov");
-    std::ifstream src(asset("show_simple.dhp"));
-    std::string dhp_content((std::istreambuf_iterator<char>(src)),
-                            std::istreambuf_iterator<char>());
-    src.close();
-    // Replace the hardcoded path with the actual path on this machine.
-    auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
-    if (pos != std::string::npos) {
-        dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
-                           asset_path);
-    }
-    auto tmp = write_temp(dhp_content);
-    auto r = parse_show_file(tmp);
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     EXPECT_TRUE(r) << "errors: " << (r.errors.empty() ? "" : r.errors[0].message);
     ASSERT_TRUE(r.show.has_value());
     const auto &s = *r.show;
@@ -234,19 +240,8 @@ TEST(ShowFile, ParsesSimpleShowSuccessfully)
 
 TEST(ShowFile, SimpleShowWebcamParsed)
 {
-    // Same path rewrite as ParsesSimpleShowSuccessfully (see above).
-    auto asset_path = asset("sample_hapa_5s.mov");
-    std::ifstream src(asset("show_simple.dhp"));
-    std::string dhp_content((std::istreambuf_iterator<char>(src)),
-                            std::istreambuf_iterator<char>());
-    src.close();
-    auto pos = dhp_content.find("/root/dancehap/tests/assets/sample_hapa_5s.mov");
-    if (pos != std::string::npos) {
-        dhp_content.replace(pos, std::string("/root/dancehap/tests/assets/sample_hapa_5s.mov").length(),
-                           asset_path);
-    }
-    auto tmp = write_temp(dhp_content);
-    auto r = parse_show_file(tmp);
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     const auto &w = r.show->webcam;
     EXPECT_EQ(w.device, "default");
@@ -258,7 +253,8 @@ TEST(ShowFile, SimpleShowWebcamParsed)
 
 TEST(ShowFile, SimpleShowMattingParsed)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     const auto &m = r.show->matting;
     EXPECT_EQ(m.model, "rvm_mobilenetv3");
@@ -267,12 +263,13 @@ TEST(ShowFile, SimpleShowMattingParsed)
 
 TEST(ShowFile, SimpleShowDLayer1ClipsParsed)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     const auto &d1 = r.show->dlayer1;
     ASSERT_EQ(d1.clips.size(), 1u);
     EXPECT_EQ(d1.clips[0].id, "bg1");
-    EXPECT_EQ(d1.clips[0].file, "/root/dancehap/tests/assets/sample_hapa_5s.mov");
+    EXPECT_EQ(d1.clips[0].file, asset("sample_hapa_5s.mov"));
     EXPECT_DOUBLE_EQ(d1.clips[0].start, 0.0);
     EXPECT_DOUBLE_EQ(d1.clips[0].duration, 30.0);
     EXPECT_TRUE(d1.clips[0].loop);
@@ -282,7 +279,8 @@ TEST(ShowFile, SimpleShowDLayer1ClipsParsed)
 
 TEST(ShowFile, SimpleShowOpacityKeyframesParsed)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->dlayer1.opacity_keyframes.size(), 2u);
     EXPECT_DOUBLE_EQ(r.show->dlayer1.opacity_keyframes[0].time, 0.0);
@@ -293,14 +291,16 @@ TEST(ShowFile, SimpleShowOpacityKeyframesParsed)
 
 TEST(ShowFile, SimpleShowDLayer2LiveHasNoClips)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     EXPECT_TRUE(r.show->dlayer2.clips.empty());
 }
 
 TEST(ShowFile, SimpleShowMarkersParsed)
 {
-    auto r = parse_show_file(asset("show_simple.dhp"));
+    std::string tmp;
+    auto r = parse_simple_show(tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->markers.size(), 2u);
     EXPECT_DOUBLE_EQ(r.show->markers[0].time, 0.0);
