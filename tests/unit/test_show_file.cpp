@@ -51,14 +51,14 @@ void cleanup(const std::string &p)
     if (!p.empty()) std::filesystem::remove(p);
 }
 
-// Parse show_simple.dhp with the hardcoded /root/dancehap path rewritten
+// Parse a .dhp fixture with the hardcoded /root/dancehap path rewritten
 // to the actual asset directory on this machine. All tests that use
-// show_simple.dhp must call this instead of parse_show_file(asset(...)).
+// show_simple.dhp or show_full.dhp must call this instead of parse_show_file(asset(...)).
 // Returns the parsed result and sets tmp_path for later cleanup.
-dancehap::ParseResult parse_simple_show(std::string &tmp_path)
+dancehap::ParseResult parse_dhp_fixture(const char *fixture_name, std::string &tmp_path)
 {
     auto asset_path = asset("sample_hapa_5s.mov");
-    std::ifstream src(asset("show_simple.dhp"));
+    std::ifstream src(asset(fixture_name));
     std::string dhp_content((std::istreambuf_iterator<char>(src)),
                             std::istreambuf_iterator<char>());
     src.close();
@@ -228,7 +228,7 @@ TEST(ShowFile, NegativeDurationReturnsError)
 TEST(ShowFile, ParsesSimpleShowSuccessfully)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     EXPECT_TRUE(r) << "errors: " << (r.errors.empty() ? "" : r.errors[0].message);
     ASSERT_TRUE(r.show.has_value());
     const auto &s = *r.show;
@@ -241,7 +241,7 @@ TEST(ShowFile, ParsesSimpleShowSuccessfully)
 TEST(ShowFile, SimpleShowWebcamParsed)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     const auto &w = r.show->webcam;
     EXPECT_EQ(w.device, "default");
@@ -254,7 +254,7 @@ TEST(ShowFile, SimpleShowWebcamParsed)
 TEST(ShowFile, SimpleShowMattingParsed)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     const auto &m = r.show->matting;
     EXPECT_EQ(m.model, "rvm_mobilenetv3");
@@ -264,7 +264,7 @@ TEST(ShowFile, SimpleShowMattingParsed)
 TEST(ShowFile, SimpleShowDLayer1ClipsParsed)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     const auto &d1 = r.show->dlayer1;
     ASSERT_EQ(d1.clips.size(), 1u);
@@ -280,7 +280,7 @@ TEST(ShowFile, SimpleShowDLayer1ClipsParsed)
 TEST(ShowFile, SimpleShowOpacityKeyframesParsed)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->dlayer1.opacity_keyframes.size(), 2u);
     EXPECT_DOUBLE_EQ(r.show->dlayer1.opacity_keyframes[0].time, 0.0);
@@ -292,7 +292,7 @@ TEST(ShowFile, SimpleShowOpacityKeyframesParsed)
 TEST(ShowFile, SimpleShowDLayer2LiveHasNoClips)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     EXPECT_TRUE(r.show->dlayer2.clips.empty());
 }
@@ -300,7 +300,7 @@ TEST(ShowFile, SimpleShowDLayer2LiveHasNoClips)
 TEST(ShowFile, SimpleShowMarkersParsed)
 {
     std::string tmp;
-    auto r = parse_simple_show(tmp);
+    auto r = parse_dhp_fixture("show_simple.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->markers.size(), 2u);
     EXPECT_DOUBLE_EQ(r.show->markers[0].time, 0.0);
@@ -315,7 +315,8 @@ TEST(ShowFile, SimpleShowMarkersParsed)
 
 TEST(ShowFile, ParsesFullShowSuccessfully)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     EXPECT_TRUE(r);
     ASSERT_TRUE(r.show.has_value());
     EXPECT_EQ(r.show->version, "2.0");
@@ -325,7 +326,8 @@ TEST(ShowFile, ParsesFullShowSuccessfully)
 
 TEST(ShowFile, FullShowMattingExtrasParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     const auto &m = r.show->matting;
     EXPECT_EQ(m.model, "mediapipe_selfie");
@@ -340,7 +342,8 @@ TEST(ShowFile, FullShowMattingExtrasParsed)
 
 TEST(ShowFile, FullShowMultipleClipsParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->dlayer1.clips.size(), 2u);
     EXPECT_EQ(r.show->dlayer1.clips[1].id, "bg_shine");
@@ -351,7 +354,8 @@ TEST(ShowFile, FullShowMultipleClipsParsed)
 
 TEST(ShowFile, FullShowKeyframeHandlesParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     const auto &kfs = r.show->dlayer1.opacity_keyframes;
     ASSERT_GE(kfs.size(), 2u);
@@ -367,7 +371,8 @@ TEST(ShowFile, FullShowKeyframeHandlesParsed)
 
 TEST(ShowFile, FullShowAudioTracksParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->audio_tracks.size(), 2u);
     EXPECT_EQ(r.show->audio_tracks[0].id, "track_main");
@@ -380,7 +385,8 @@ TEST(ShowFile, FullShowAudioTracksParsed)
 
 TEST(ShowFile, FullShowMarkersParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->markers.size(), 3u);
     EXPECT_EQ(r.show->markers[2].name, "Greatest Day");
@@ -389,7 +395,8 @@ TEST(ShowFile, FullShowMarkersParsed)
 
 TEST(ShowFile, FullShowOverlayClipParsed)
 {
-    auto r = parse_show_file(asset("show_full.dhp"));
+    std::string tmp;
+    auto r = parse_dhp_fixture("show_full.dhp", tmp);
     ASSERT_TRUE(r);
     ASSERT_EQ(r.show->dlayer3.clips.size(), 1u);
     EXPECT_FALSE(r.show->dlayer3.clips[0].loop);
@@ -584,17 +591,21 @@ TEST(ShowFile, MissingWebcamSectionUsesDefaults)
 
 TEST(ShowFile, ClipDefaultsLoopFalseAndCrossfadeZero)
 {
-    std::string p = write_temp(R"({
+    auto asset_path = asset("sample_hapa_5s.mov");
+    std::string json = R"({
       "version":"2.0",
       "show":{"name":"x","duration":10.0},
       "dlayers":{
         "dlayer1_background":{"clips":[
-          {"id":"c1","file":"/root/dancehap/tests/assets/sample_hapa_5s.mov","start":0.0,"duration":5.0}
+          {"id":"c1","file":"__ASSET__","start":0.0,"duration":5.0}
         ],"opacity_keyframes":[{"time":0.0,"value":1.0}]},
         "dlayer2_live":{"opacity_keyframes":[{"time":0.0,"value":0.0}]},
         "dlayer3_overlay":{"clips":[],"opacity_keyframes":[{"time":0.0,"value":0.0}]}
       }
-    })");
+    })";
+    auto pos = json.find("__ASSET__");
+    if (pos != std::string::npos) json.replace(pos, 9, asset_path);
+    std::string p = write_temp(json);
     auto r = parse_show_file(p);
     EXPECT_TRUE(r);
     ASSERT_TRUE(r.show.has_value());
