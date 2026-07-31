@@ -63,6 +63,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Install Qt6 for the dock widget (Phase 3, Étape 6).
+          # The dock uses QWidget + AUTOMOC; without Qt6 it compiles as a no-op.
+          # aqtinstall is a lightweight Qt installer (faster than choco).
+          pip install aqtinstall
+          aqt install-qt windows desktop 6.7.3 win64_msvc2022_64 -m widgets --outputdir ${{ github.workspace }}\qt6
+          echo "Qt6_DIR=${{ github.workspace }}\qt6\6.7.3\msvc2022_64" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=${{ github.workspace }}\qt6\6.7.3\msvc2022_64;${{ github.workspace }}\obs-deps" >> $env:GITHUB_ENV
+
           # Download prebuilt OBS dependencies (third-party libs for compilation)
           $depsUrl = "https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/windows-deps-${{ env.OBS_DEPS_VERSION }}-x64.zip"
           Write-Host "Downloading obs-deps from $depsUrl"
@@ -96,6 +104,12 @@ jobs:
       - name: Setup OBS SDK (macOS)
         if: runner.os == 'macOS'
         run: |
+          # Install Qt6 for the dock widget (Phase 3, Étape 6).
+          # The dock uses QWidget + AUTOMOC; without Qt6 it compiles as a no-op.
+          brew install qt6
+          brew link --force qt6
+          echo "CMAKE_PREFIX_PATH=$PWD/obs-deps:/opt/homebrew/opt/qt6" >> $GITHUB_ENV
+
           # Download prebuilt OBS dependencies
           deps_url="https://github.com/obsproject/obs-deps/releases/download/${{ env.OBS_DEPS_VERSION }}/macos-deps-${{ env.OBS_DEPS_VERSION }}-universal.tar.xz"
           echo "Downloading obs-deps from $deps_url"
@@ -170,12 +184,23 @@ jobs:
             EXTRA_ARGS="$EXTRA_ARGS -DDANCEHAP_WITH_ONNXRUNTIME=ON"
             EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_INCLUDE_DIRS=$ORT_INCLUDE"
             EXTRA_ARGS="$EXTRA_ARGS -DONNXRuntime_LIBRARIES=$ORT_LIB_ABS"
+            # Qt6 path (set in the Setup step via GITHUB_ENV).
+            QT_PREFIX="$Qt6_DIR"
+          else
+            # macOS: Qt6 installed via Homebrew.
+            QT_PREFIX="/opt/homebrew/opt/qt6"
+          fi
+          # CMAKE_PREFIX_PATH must include both obs-deps and Qt6 so that
+          # find_package(Qt6) succeeds. We prepend Qt6 to the existing env.
+          PREFIX_PATHS="$PWD/obs-deps"
+          if [ -n "$QT_PREFIX" ] && [ -d "$QT_PREFIX" ]; then
+            PREFIX_PATHS="$QT_PREFIX;$PWD/obs-deps"
           fi
           cmake -B build -S . ${{ matrix.cmake_generator }} \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DDANCEHAP_BUILD_TESTS=OFF \
             -DDANCEHAP_WITH_OBS_DEPS=ON \
-            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DCMAKE_PREFIX_PATH="$PREFIX_PATHS" \
             -Dlibobs_DIR="$PWD/obs-build/libobs" \
             $EXTRA_ARGS
 

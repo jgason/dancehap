@@ -435,6 +435,21 @@ void gs_texture_destroy(gs_texture_t *tex)
     }
 }
 
+void gs_texture_set_image(gs_texture_t *tex,
+                          const uint8_t * /*data*/,
+                          uint32_t /*linesize*/,
+                          bool /*flip*/)
+{
+    // Stub: no-op. In real OBS this updates the texture's pixel buffer in-place
+    // without re-allocating GPU memory. We just verify the texture handle is
+    // valid (non-null) so the leak-fix code path is exercised in stub mode.
+    if (tex) {
+        // Texture reused — no new allocation. This lets tests that count
+        // g_textures_created verify the leak fix works (1 create per dimension
+        // change, not 1 per frame).
+    }
+}
+
 // ---------------------------------------------------------------------------+
 // Phase 3: Source lifecycle stubs (private sources, frames, hotkeys)
 // ---------------------------------------------------------------------------+

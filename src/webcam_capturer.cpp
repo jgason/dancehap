@@ -203,7 +203,7 @@ WebcamFrame WebcamCapturer::getFrame()
     // It returns the latest available frame (or nullptr if none ready yet).
     // The frame->data[0] is BGRA, and frame->linesize is the row stride
     // which may be > width*4 due to GPU padding.
-    obs_source_frame_t *frame = obs_source_get_frame(pimpl_->webcam_source);
+    obs_source_frame *frame = obs_source_get_frame(pimpl_->webcam_source);
     if (!frame) return WebcamFrame{};
 
     WebcamFrame result;

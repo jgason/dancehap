@@ -337,6 +337,13 @@ struct CompositeContext {
     // Composite effect shader (loaded in update(), used in video_render)
     gs_effect_t *composite_effect = nullptr;
 
+    // Webcam GPU texture — created ONCE and reused across frames to avoid
+    // a GPU memory leak (texture leak #3, Étape 9). Updated in-place via
+    // gs_texture_set_image(); destroyed in composite_destroy().
+    gs_texture_t *webcam_tex = nullptr;
+    uint32_t webcam_tex_width = 0;
+    uint32_t webcam_tex_height = 0;
+
 #ifdef DANCEHAP_HAVE_OBS
     obs_source_t *source = nullptr;
 #endif
@@ -630,17 +637,37 @@ struct CompositeContext {
         param = gs_effect_get_param_by_name(composite_effect, "bg_image2");
         if (param && bg2_tex) gs_effect_set_texture(param, bg2_tex);
 
-        // DLayer 2 (webcam + matting) — upload matted frame to GPU texture
+        // DLayer 2 (webcam + matting) — upload matted frame to GPU texture.
         // Must be on render thread (gs_* only from video_render).
-        gs_texture_t *webcam_tex = nullptr;
+        // FIX texture leak #3 (Étape 9): create the texture ONCE and reuse it
+        // via gs_texture_set_image() instead of creating a new one every frame.
         {
             std::lock_guard<std::mutex> ml(dlayer2.matted_lock);
             if (dlayer2.matted_ready && dlayer2.matted_width > 0 &&
                 !dlayer2.matted_bgra.empty()) {
                 const uint8_t *data_ptr = dlayer2.matted_bgra.data();
-                webcam_tex = gs_texture_create(
-                    dlayer2.matted_width, dlayer2.matted_height,
-                    GS_BGRA, 1, &data_ptr, 0);
+                uint32_t w = dlayer2.matted_width;
+                uint32_t h = dlayer2.matted_height;
+
+                if (webcam_tex && webcam_tex_width == w && webcam_tex_height == h) {
+                    // Reuse existing texture — update its contents in-place.
+                    // This avoids a GPU memory leak (one gs_texture_create per
+                    // frame without a matching gs_texture_destroy).
+                    gs_texture_set_image(webcam_tex, data_ptr,
+                                         w * 4, false);
+                } else {
+                    // First frame or dimensions changed — (re)create the texture.
+                    if (webcam_tex) {
+                        gs_texture_destroy(webcam_tex);
+                        webcam_tex = nullptr;
+                    }
+                    webcam_tex = gs_texture_create(
+                        w, h, GS_BGRA, 1, &data_ptr, 0);
+                    if (webcam_tex) {
+                        webcam_tex_width = w;
+                        webcam_tex_height = h;
+                    }
+                }
             }
         }
         param = gs_effect_get_param_by_name(composite_effect, "webcam_image");
@@ -833,6 +860,13 @@ void composite_destroy(void *data)
 
     // Release graphics resources
 #ifdef DANCEHAP_HAVE_OBS
+    // Destroy the webcam texture (texture leak #3 fix, Étape 9).
+    if (ctx->webcam_tex) {
+        obs_enter_graphics();
+        gs_texture_destroy(ctx->webcam_tex);
+        ctx->webcam_tex = nullptr;
+        obs_leave_graphics();
+    }
     if (ctx->composite_effect) {
         obs_enter_graphics();
         gs_effect_destroy(ctx->composite_effect);

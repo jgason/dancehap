@@ -28,6 +28,11 @@
 #include <obs-data.h>
 #include <obs-properties.h>
 
+// obs-frontend-api.h provides the dock registration API used by the Phase 3
+// dock widget (obs_frontend_add_dock_by_id / obs_frontend_remove_dock).
+// It lives in frontend/api/, not libobs/, so we include it explicitly.
+#include <obs-frontend-api.h>
+
 // obs_register_source is a macro defined by OBS — nothing extra needed.
 
 // ============================================================================
@@ -111,13 +116,19 @@ struct obs_source_frame {
 typedef struct obs_source_frame obs_source_frame_t;
 
 // Phase 3: hotkey types (minimal stub).
+// FIX 5 (Étape 9): obs_hotkey_id is typedef'd as uint64_t here in stub mode.
+// In real OBS mode (DANCEHAP_HAVE_OBS), obs-hotkey.h defines its own
+// obs_hotkey_id. The two are never visible at the same time (this section
+// is inside the #else / stub block), so there is no redefinition conflict.
+// obs_compat.hpp does NOT include obs-hotkey.h in stub mode.
 typedef uint64_t obs_hotkey_id;
 typedef uint64_t obs_hotkey_pair_id;
 struct obs_hotkey;
 typedef struct obs_hotkey obs_hotkey_t;
 
 // Phase 3: hotkey callback type (matches OBS obs-hotkey.h).
-typedef void (*obs_hotkey_func)(void *data, obs_hotkey_t *hotkey, bool pressed);
+// Real OBS signature: void (*)(void *data, obs_hotkey_id id, bool pressed).
+typedef void (*obs_hotkey_func)(void *data, obs_hotkey_id id, bool pressed);
 
 // ---- Enums ----------------------------------------------------------------
 
@@ -319,6 +330,14 @@ gs_texture_t *gs_texture_create(uint32_t width, uint32_t height,
                                   const uint8_t **data,
                                   uint32_t flags);
 void           gs_texture_destroy(gs_texture_t *tex);
+
+// Update an existing 2D texture's pixel data in-place (no re-allocation).
+// Used to reuse a webcam texture across frames instead of creating a new one
+// each frame (texture leak #3 fix, Étape 9).
+void           gs_texture_set_image(gs_texture_t *tex,
+                                     const uint8_t *data,
+                                     uint32_t linesize,
+                                     bool flip);
 
 // ---------------------------------------------------------------------------+
 // Phase 3: Source lifecycle stubs (for private webcam source, hotkeys)

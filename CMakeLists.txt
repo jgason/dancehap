@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(DanceHAP
-    VERSION 0.7.0
+    VERSION 0.8.0
     DESCRIPTION "OBS plugin for immersive dance scenes: HAP clips + real-time matting + alpha overlays"
     LANGUAGES CXX
 )
@@ -163,6 +163,23 @@ if(DANCEHAP_WITH_ONNXRUNTIME)
     else()
         message(STATUS "ONNX Runtime: not found — using stub matte engine")
     endif()
+endif()
+
+# --- Qt6 for dock widget (Phase 3, Étape 6) ----------------------------------
+# Qt6 is optional: the dock compiles as a no-op when Qt6 is not found.
+# DANCEHAP_HAVE_QT is defined only when Qt6::Widgets is available, which
+# protects the stub mode (no OBS, no Qt needed) and CI environments where
+# Qt6 may not be installed.
+find_package(Qt6 COMPONENTS Widgets QUIET)
+if(Qt6_FOUND)
+    set(CMAKE_AUTOMOC ON)
+    target_link_libraries(dancehap PRIVATE Qt6::Widgets)
+    target_link_libraries(dancehap_objs PRIVATE Qt6::Widgets)
+    target_compile_definitions(dancehap PRIVATE DANCEHAP_HAVE_QT)
+    target_compile_definitions(dancehap_objs PRIVATE DANCEHAP_HAVE_QT)
+    message(STATUS "Qt6: found — dock widget enabled (DANCEHAP_HAVE_QT)")
+else()
+    message(STATUS "Qt6: not found — dock widget compiled as no-op")
 endif()
 
 # --- nlohmann/json (Phase 3 show file parser) -------------------------------
