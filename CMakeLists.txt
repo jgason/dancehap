@@ -73,8 +73,7 @@ if(DANCEHAP_WITH_OBS_DEPS)
         # Xcode puts the dylib deep in the build tree:
         #   obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary/
         # Make/MSVC puts it in obs-build/frontend/api/Release/
-        # macOS Xcode doesn't prefix dylib names with 'lib', so we need
-        # to search for both 'obs-frontend-api' and 'libobs-frontend-api'.
+        # macOS Xcode doesn't prefix dylib names with 'lib'.
         find_library(OBS_FRONTEND_API_LIB NAMES obs-frontend-api libobs-frontend-api
             PATHS
                 "${obs-frontend-api_DIR}/Release"
@@ -83,8 +82,12 @@ if(DANCEHAP_WITH_OBS_DEPS)
                 "$ENV{PWD}/obs-build/frontend/api/Release"
                 "$ENV{PWD}/obs-build/frontend/api"
                 "$ENV{PWD}/obs-build/build/obs-frontend-api.build/Release/Objects-normal/arm64/Binary"
-            NO_DEFAULT_PATH
         )
+        # Debug: show what we searched for.
+        message(STATUS "OBS frontend API search: NAMES=obs-frontend-api,libobs-frontend-api")
+        message(STATUS "  OBS_FRONTEND_API_LIB_DIR=${OBS_FRONTEND_API_LIB_DIR}")
+        message(STATUS "  obs-frontend-api_DIR=${obs-frontend-api_DIR}")
+        message(STATUS "  result: OBS_FRONTEND_API_LIB=${OBS_FRONTEND_API_LIB}")
         if(OBS_FRONTEND_API_LIB)
             set(DANCEHAP_FRONTEND_API_LIB "${OBS_FRONTEND_API_LIB}")
             message(STATUS "OBS frontend API: found via find_library: ${OBS_FRONTEND_API_LIB}")
