@@ -28,12 +28,10 @@
 #include <obs-data.h>
 #include <obs-properties.h>
 
-// obs-frontend-api.h provides the dock registration API used by the Phase 3
-// dock widget (obs_frontend_add_dock_by_id / obs_frontend_remove_dock).
-// It lives in frontend/api/, not libobs/, so we include it explicitly.
-#include <obs-frontend-api.h>
-
 // obs_register_source is a macro defined by OBS — nothing extra needed.
+// NOTE: obs-frontend-api.h (for dock registration) is included by
+// dancehap_dock.cpp directly, not here, because it lives in frontend/api/
+// which is not always in the include path on all OBS SDK setups.
 
 // ============================================================================
 //  Stub mode
